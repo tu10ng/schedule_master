@@ -9,7 +9,7 @@ from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QRect, QSize, QPropertyAnimation, 
     QEasingCurve, pyqtSignal
 )
-from PyQt6.QtGui import QPalette, QColor, QFont
+from PyQt6.QtGui import QPalette, QColor, QFont, QCursor
 
 class TaskWidget(QWidget):
     """单个任务小部件"""
@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         self.docked_side = None
         self.normal_geometry = QRect(0, 0, 350, 500)
         self.snap_threshold = 50
-        self.collapsed_width = 4
+        self.collapsed_width = 5
         self.mouse_press_pos = None
         
         self.collapse_timer = QTimer()
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
             
         self.min_btn.clicked.connect(self.showMinimized)
         self.max_btn.clicked.connect(self.toggle_maximize)
-        self.close_btn.clicked.connect(self.close)
+        self.close_btn.clicked.connect(QApplication.quit)
         
         self.main_layout.addWidget(self.title_bar)
         
@@ -208,8 +208,11 @@ class MainWindow(QMainWindow):
         self.collapse_timer.stop()
 
     def leaveEvent(self, event):
-        if self.docked_side and not self.is_collapsed:
-            self.collapse_timer.start(200)
+        # Only start collapse if the mouse is truly outside the widget area
+        # This prevents flickering when the mouse is at the very edge
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            if self.docked_side and not self.is_collapsed:
+                self.collapse_timer.start(150)
 
     def animate_collapse(self):
         if self.is_collapsed or self.isMaximized(): return
@@ -234,8 +237,8 @@ class MainWindow(QMainWindow):
         self.central_widget.show()
         
         self.expand_anim = QPropertyAnimation(self, b"geometry")
-        self.expand_anim.setDuration(300)
-        self.expand_anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        self.expand_anim.setDuration(150)
+        self.expand_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.expand_anim.setEndValue(self.normal_geometry)
         self.expand_anim.start()
 
@@ -245,6 +248,7 @@ if __name__ == "__main__":
     if sys.platform == "linux":
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
