@@ -1,452 +1,304 @@
 #!/usr/bin/env python3
+"""
+Schedule Master - Oxygen Not Included Style
+多轨平铺任务管理工具
+"""
 import sys
 import os
+from dataclasses import dataclass
+from typing import List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
-    QHBoxLayout, QLabel, QPushButton, QCheckBox, QLineEdit,
-    QScrollArea, QSizePolicy
+    QHBoxLayout, QLabel, QScrollArea
 )
-from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QRect, QSize, QPropertyAnimation, 
-    QEasingCurve, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import (
+    QPainter, QColor, QPen, QBrush, QFont, 
+    QLinearGradient
 )
-from PyQt6.QtGui import QPalette, QColor, QFont, QCursor
-
-from models.task_manager import TaskManager
-from models.task import Task
-from storage.task_storage import TaskStorage
 
 
-class TaskWidget(QWidget):
-    """单个任务小部件 - Excel式编辑"""
+@dataclass
+class Task:
+    """任务数据模型"""
+    title: str
+    start_hour: float  # 0-24
+    end_hour: float    # 0-24
+    color: str
+    track: int = 0  # 自动计算的轨道编号
+
+
+class MultiTrackLayoutEngine:
+    """多轨平铺布局算法"""
     
-    deleted = pyqtSignal(str)  # task_id
+    @staticmethod
+    def is_overlap(task1: Task, task2: Task) -> bool:
+        """检测两个任务是否时间重叠"""
+        return task1.start_hour < task2.end_hour and task2.start_hour < task1.end_hour
     
-    def __init__(self, task: Task, task_manager: TaskManager, parent=None):
+    @staticmethod
+    def layout_tasks(tasks: List[Task]) -> int:
+        """
+        分配轨道编号并返回所需最大轨道数
+        算法：贪心策略，每个任务分配到最低可用轨道
+        """
+        if not tasks:
+            return 0
+        
+        # 按开始时间排序
+        sorted_tasks = sorted(tasks, key=lambda t: t.start_hour)
+        
+        # 跟踪每个轨道的最后结束时间
+        track_end_times = []
+        
+        for task in sorted_tasks:
+            assigned = False
+            for track_idx, end_time in enumerate(track_end_times):
+                if task.start_hour >= end_time:
+                    task.track = track_idx
+                    track_end_times[track_idx] = task.end_hour
+                    assigned = True
+                    break
+            
+            if not assigned:
+                task.track = len(track_end_times)
+                track_end_times.append(task.end_hour)
+        
+        return len(track_end_times)
+
+
+class TaskBlock(QWidget):
+    """任务块组件 - 带发光效果"""
+    
+    def __init__(self, task: Task, timeline_width: int, parent=None):
         super().__init__(parent)
         self.task = task
-        self.task_manager = task_manager
-        self.save_timer = QTimer()
-        self.save_timer.setSingleShot(True)
-        self.save_timer.timeout.connect(self._save_content)
-        self.init_ui()
+        self.timeline_width = timeline_width
+        self.is_hovered = False
+        self.setMouseTracking(True)
+        self.calculate_geometry()
         
-    def init_ui(self):
-        layout = QHBoxLayout()
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(10)
-        
-        # Checkbox
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(self.task.completed)
-        self.checkbox.stateChanged.connect(self._on_completion_changed)
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                border: 2px solid #4A90E2;
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-            QCheckBox::indicator:checked {
-                background-color: #4A90E2;
-                border-color: #4A90E2;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #5BA3F5;
-            }
-        """)
-        
-        # 单行文本编辑 - Excel风格
-        self.content_edit = QLineEdit()
-        self.content_edit.setText(self.task.content)
-        self.content_edit.setPlaceholderText("输入任务内容...")
-        self.content_edit.textChanged.connect(self._on_text_changed)
-        self.content_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(255, 255, 255, 0.12);
-                border: 1px solid rgba(74, 144, 226, 0.3);
-                border-radius: 4px;
-                color: #FFFFFF;
-                padding: 6px 10px;
-                font-size: 10pt;
-            }
-            QLineEdit:focus {
-                border: 1px solid #4A90E2;
-                background-color: rgba(255, 255, 255, 0.18);
-            }
-        """)
-        
-        # Delete button (hidden by default, shows on hover)
-        self.delete_btn = QPushButton("✕")
-        self.delete_btn.setFixedSize(24, 24)
-        self.delete_btn.clicked.connect(self._on_delete_clicked)
-        self.delete_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(232, 17, 35, 0.7);
-                color: white;
-                border: none;
-                border-radius: 12px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: rgba(232, 17, 35, 0.9);
-            }
-        """)
-        self.delete_btn.hide()
-        
-        layout.addWidget(self.checkbox)
-        layout.addWidget(self.content_edit, 1)
-        layout.addWidget(self.delete_btn)
-        
-        self.setLayout(layout)
-        self.setStyleSheet("""
-            TaskWidget {
-                background-color: rgba(45, 48, 55, 0.6);
-                border-radius: 6px;
-                margin: 2px 0px;
-            }
-            TaskWidget:hover {
-                background-color: rgba(55, 58, 65, 0.7);
-            }
-        """)
+    def calculate_geometry(self):
+        """根据任务时间计算几何位置"""
+        hour_width = self.timeline_width / 24.0
+        x = int(self.task.start_hour * hour_width)
+        width = int((self.task.end_hour - self.task.start_hour) * hour_width)
+        height = 35 
+        self.setGeometry(x, 0, width, height)
     
     def enterEvent(self, event):
-        """Show delete button on hover"""
-        self.delete_btn.show()
-        super().enterEvent(event)
-    
+        self.is_hovered = True
+        self.update()
+        
     def leaveEvent(self, event):
-        """Hide delete button"""
-        self.delete_btn.hide()
-        super().leaveEvent(event)
+        self.is_hovered = False
+        self.update()
     
-    def _on_text_changed(self):
-        """Debounced save on text change"""
-        self.save_timer.start(500)  # 500ms后保存
-    
-    def _save_content(self):
-        """Save content to task manager"""
-        new_content = self.content_edit.text()
-        if new_content != self.task.content:
-            self.task_manager.update_task(self.task.id, content=new_content)
-    
-    def _on_completion_changed(self, state):
-        """Update completion status"""
-        completed = (state == Qt.CheckState.Checked.value)
-        self.task_manager.update_task(self.task.id, completed=completed)
-    
-    def _on_delete_clicked(self):
-        """Delete this task"""
-        self.deleted.emit(self.task.id)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        if self.is_hovered:
+            for i in range(5):
+                alpha = 50 - i * 10
+                glow_color = QColor(self.task.color)
+                glow_color.setAlpha(alpha)
+                pen = QPen(glow_color, 2 + i * 0.5)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                rect = QRectF(i, i, self.width() - 2*i, self.height() - 2*i)
+                painter.drawRoundedRect(rect, 6, 6)
+        
+        main_rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        base_color = QColor(self.task.color)
+        gradient.setColorAt(0, base_color.lighter(110))
+        gradient.setColorAt(1, base_color)
+        
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(QPen(QColor(self.task.color).darker(120), 2))
+        painter.drawRoundedRect(main_rect, 6, 6)
+        
+        painter.setPen(QColor("#FFFFFF"))
+        font = QFont("Consolas", 10, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(main_rect, Qt.AlignmentFlag.AlignCenter, self.task.title)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
+class TimelineCanvas(QWidget):
+    """时间轴画布子类，用于绘制网格"""
+    def __init__(self, timeline_width: int, max_tracks: int, track_height: int, track_spacing: int, parent=None):
+        super().__init__(parent)
+        self.timeline_width = timeline_width
+        self.max_tracks = max_tracks
+        self.track_height = track_height
+        self.track_spacing = track_spacing
+        self.setFixedWidth(timeline_width)
+        total_height = max(max_tracks * track_height + (max_tracks - 1) * track_spacing, 45)
+        self.setFixedHeight(total_height)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#1F2329"))
         
-        # Window state
-        self.is_collapsed = False
-        self.docked_side = None
-        self.normal_geometry = QRect(0, 0, 400, 550)
-        self.snap_threshold = 50
-        self.collapsed_width = 5
-        self.mouse_press_pos = None
+        hour_width = self.timeline_width / 24
+        for i in range(25):
+            x = int(i * hour_width)
+            pen = QPen(QColor("#3A4049" if i % 6 == 0 else "#2A3039"), 1)
+            painter.setPen(pen)
+            painter.drawLine(x, 0, x, self.height())
         
-        # Task management
-        self.task_manager = TaskManager()
-        self.task_storage = TaskStorage()
-        self.task_widgets = {}  # task_id -> TaskWidget
+        for i in range(self.max_tracks + 1):
+            y = i * (self.track_height + self.track_spacing)
+            painter.setPen(QPen(QColor("#2A3039"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(0, y, self.timeline_width, y)
+
+
+class PersonRow(QWidget):
+    """人员行组件"""
+    def __init__(self, person_name: str, tasks: List[Task], parent=None):
+        super().__init__(parent)
+        self.person_name = person_name
+        self.tasks = tasks
+        self.timeline_width = 960
+        self.track_height = 40
+        self.track_spacing = 5
         
-        # Auto-save timer
-        self.auto_save_timer = QTimer()
-        self.auto_save_timer.setSingleShot(True)
-        self.auto_save_timer.timeout.connect(self._save_tasks)
-        
-        # Collapse timer
-        self.collapse_timer = QTimer()
-        self.collapse_timer.setSingleShot(True)
-        self.collapse_timer.timeout.connect(self.animate_collapse)
-        
-        # Connect task manager signals
-        self.task_manager.task_added.connect(self._on_task_added)
-        self.task_manager.task_updated.connect(self._on_task_updated)
-        self.task_manager.task_deleted.connect(self._on_task_deleted)
-        
+        self.max_tracks = MultiTrackLayoutEngine.layout_tasks(tasks)
         self.init_ui()
-        self.setup_window_properties()
-        self.load_tasks()
-
+    
     def init_ui(self):
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QVBoxLayout(self.central_widget)
-        self.main_layout.setContentsMargins(10, 5, 10, 10)
-        self.main_layout.setSpacing(8)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
-        # Title Bar
-        self.title_bar = self.create_title_bar()
-        self.main_layout.addWidget(self.title_bar)
-        
-        # Scrollable Task List
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setStyleSheet("""
-            QScrollArea {
-                background: transparent;
-                border: none;
-            }
-            QScrollBar:vertical {
-                background: rgba(255, 255, 255, 0.05);
-                width: 8px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(74, 144, 226, 0.5);
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(74, 144, 226, 0.7);
-            }
-        """)
-        
-        # Task container
-        self.task_container = QWidget()
-        self.task_layout = QVBoxLayout(self.task_container)
-        self.task_layout.setContentsMargins(0, 0, 0, 0)
-        self.task_layout.setSpacing(4)
-        self.task_layout.addStretch()
-        
-        self.scroll_area.setWidget(self.task_container)
-        self.main_layout.addWidget(self.scroll_area, 1)
-        
-        # Add Task Button
-        self.add_task_btn = QPushButton("+ 新增任务")
-        self.add_task_btn.clicked.connect(self._add_new_task)
-        self.add_task_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(74, 144, 226, 0.5);
-                color: white;
-                border: 1px dashed rgba(74, 144, 226, 0.8);
-                border-radius: 6px;
-                padding: 8px;
+        name_label = QLabel(self.person_name)
+        name_label.setFixedWidth(120)
+        name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        name_label.setStyleSheet("""
+            QLabel {
+                background-color: #2A3039;
+                color: #FFFFFF;
                 font-weight: bold;
-                font-size: 10pt;
-            }
-            QPushButton:hover {
-                background-color: rgba(74, 144, 226, 0.7);
-                border: 1px solid #4A90E2;
-            }
-            QPushButton:pressed {
-                background-color: rgba(58, 115, 181, 0.8);
+                font-size: 14px;
+                padding-right: 15px;
+                border-right: 2px solid #3A4049;
             }
         """)
-        self.main_layout.addWidget(self.add_task_btn)
-
-        self.setStyleSheet("""
-            QMainWindow { 
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                    stop:0 rgba(40, 44, 52, 0.95), 
-                    stop:1 rgba(25, 28, 34, 0.95));
-                border: 1px solid rgba(74, 144, 226, 0.5);
-                border-radius: 8px;
-            }
-        """)
-
-    def create_title_bar(self):
-        """创建标题栏"""
-        title_bar = QWidget()
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(5, 5, 0, 5)
+        layout.addWidget(name_label)
         
-        title_label = QLabel("📋 Schedule Master")
-        title_label.setStyleSheet("color: white; font-weight: bold; font-family: 'Microsoft YaHei';")
-        layout.addWidget(title_label)
+        self.timeline_canvas = TimelineCanvas(
+            self.timeline_width, self.max_tracks, 
+            self.track_height, self.track_spacing, self
+        )
+        layout.addWidget(self.timeline_canvas)
         layout.addStretch()
         
-        # Standard window buttons
-        btn_style = """
-            QPushButton { 
-                background: transparent; 
-                color: white; 
-                border: none; 
-                font-family: 'Segoe UI Symbol', 'Microsoft YaHei';
-                font-size: 12px; 
-                width: 32px; 
-                height: 32px; 
-            }
-            QPushButton:hover { background: rgba(255, 255, 255, 0.15); }
-            QPushButton#closeBtn:hover { background: #e81123; }
-        """
+        for task in self.tasks:
+            block = TaskBlock(task, self.timeline_width, self.timeline_canvas)
+            y_pos = task.track * (self.track_height + self.track_spacing) + 5
+            block.move(block.x(), y_pos)
+
+
+class TimelineHeader(QWidget):
+    """时间轴表头子类"""
+    def __init__(self, timeline_width: int, parent=None):
+        super().__init__(parent)
+        self.timeline_width = timeline_width
+        self.setFixedWidth(timeline_width)
+        self.setFixedHeight(40)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        self.min_btn = QPushButton("—")
-        self.max_btn = QPushButton("☐")
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setObjectName("closeBtn")
+        hour_width = self.timeline_width / 24
+        painter.setFont(QFont("Consolas", 9))
+        painter.setPen(QColor("#AAAAAA"))
         
-        for btn in [self.min_btn, self.max_btn, self.close_btn]:
-            btn.setStyleSheet(btn_style)
-            layout.addWidget(btn)
-            
-        self.min_btn.clicked.connect(self.showMinimized)
-        self.max_btn.clicked.connect(self.toggle_maximize)
-        self.close_btn.clicked.connect(QApplication.quit)
+        for i in range(24):
+            x = int(i * hour_width)
+            painter.drawText(QRectF(x, 0, hour_width, 40), Qt.AlignmentFlag.AlignCenter, f"{i:02d}:00")
+            if i > 0:
+                painter.setPen(QColor("#3A4049"))
+                painter.drawLine(x, 30, x, 40)
+                painter.setPen(QColor("#AAAAAA"))
+
+
+class ScheduleView(QMainWindow):
+    """主视图"""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Schedule Master - ONI Style")
+        self.resize(1200, 600)
+        self.init_ui()
+        self.load_demo_data()
+    
+    def init_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        return title_bar
-
-    def setup_window_properties(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint | 
-            Qt.WindowType.WindowStaysOnTopHint | 
-            Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(400, 550)
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.width() - 410, 100)
-
-    def load_tasks(self):
-        """Load tasks from storage"""
-        tasks = self.task_storage.load_tasks()
-        if tasks:
-            for task in tasks:
-                self.task_manager.tasks.append(task)
-                self._create_task_widget(task)
-        else:
-            # Create initial task if none exist
-            self._add_new_task()
-
-    def _add_new_task(self):
-        """Add a new task"""
-        task = self.task_manager.add_task("")
-        # Focus on the new task
-        if task.id in self.task_widgets:
-            self.task_widgets[task.id].content_edit.setFocus()
-
-    def _create_task_widget(self, task: Task):
-        """Create UI widget for task"""
-        task_widget = TaskWidget(task, self.task_manager)
-        task_widget.deleted.connect(lambda tid: self.task_manager.delete_task(tid))
+        # Header
+        header = QWidget()
+        header.setFixedHeight(40)
+        header.setStyleSheet("background-color: #2A3039;")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(0, 0, 0, 0)
+        h_layout.setSpacing(0)
         
-        # Insert before stretch
-        self.task_layout.insertWidget(self.task_layout.count() - 1, task_widget)
-        self.task_widgets[task.id] = task_widget
-
-    def _on_task_added(self, task: Task):
-        """Handle new task added"""
-        self._create_task_widget(task)
-        self._trigger_auto_save()
-
-    def _on_task_updated(self, task: Task):
-        """Handle task updated"""
-        self._trigger_auto_save()
-
-    def _on_task_deleted(self, task_id: str):
-        """Handle task deleted"""
-        if task_id in self.task_widgets:
-            widget = self.task_widgets[task_id]
-            self.task_layout.removeWidget(widget)
-            widget.deleteLater()
-            del self.task_widgets[task_id]
-            self._trigger_auto_save()
-
-    def _trigger_auto_save(self):
-        """Trigger auto-save with debounce"""
-        self.auto_save_timer.start(1000)  # 1秒后保存
-
-    def _save_tasks(self):
-        """Save all tasks to storage"""
-        self.task_storage.save_tasks(self.task_manager.get_all_tasks())
-
-    # Window management methods (unchanged)
-    def toggle_maximize(self):
-        if self.isMaximized():
-            self.showNormal()
-            self.max_btn.setText("☐")
-            self.setStyleSheet(self.styleSheet().replace("border-radius: 0px;", "border-radius: 8px;"))
-        else:
-            self.showMaximized()
-            self.max_btn.setText("❐")
-            self.setStyleSheet(self.styleSheet().replace("border-radius: 8px;", "border-radius: 0px;"))
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.mouse_press_pos = event.globalPosition().toPoint() - self.pos()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.MouseButton.LeftButton and self.mouse_press_pos:
-            if self.isMaximized():
-                hit_x = event.globalPosition().toPoint().x()
-                self.toggle_maximize()
-                self.move(hit_x - self.width() // 2, 0)
-                self.mouse_press_pos = event.globalPosition().toPoint() - self.pos()
-            
-            new_pos = event.globalPosition().toPoint() - self.mouse_press_pos
-            self.move(new_pos)
-            self.check_snap(new_pos)
-
-    def mouseReleaseEvent(self, event):
-        self.mouse_press_pos = None
-
-    def check_snap(self, pos):
-        screen = QApplication.primaryScreen().availableGeometry()
-        if pos.x() < self.snap_threshold:
-            self.move(0, pos.y())
-            self.docked_side = "left"
-        elif pos.x() + self.width() > screen.width() - self.snap_threshold:
-            self.move(screen.width() - self.width(), pos.y())
-            self.docked_side = "right"
-        else:
-            self.docked_side = None
-            self.collapse_timer.stop()
-
-    def enterEvent(self, event):
-        if self.is_collapsed:
-            self.animate_expand()
-        self.collapse_timer.stop()
-
-    def leaveEvent(self, event):
-        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
-            if self.docked_side and not self.is_collapsed:
-                self.collapse_timer.start(150)
-
-    def animate_collapse(self):
-        if self.is_collapsed or self.isMaximized(): return
-        self.is_collapsed = True
-        self.normal_geometry = self.geometry()
+        spacer = QWidget()
+        spacer.setFixedWidth(120)
+        spacer.setStyleSheet("border-right: 2px solid #3A4049;")
+        h_layout.addWidget(spacer)
         
-        screen = QApplication.primaryScreen().availableGeometry()
-        target_x = 0 if self.docked_side == "left" else screen.width() - self.collapsed_width
+        self.timeline_header = TimelineHeader(960)
+        h_layout.addWidget(self.timeline_header)
+        h_layout.addStretch()
         
-        self.anim = QPropertyAnimation(self, b"geometry")
-        self.anim.setDuration(250)
-        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.anim.setEndValue(QRect(target_x, self.y(), self.collapsed_width, self.height()))
+        main_layout.addWidget(header)
         
-        QTimer.singleShot(50, lambda: self.central_widget.hide())
-        self.anim.start()
-
-    def animate_expand(self):
-        if not self.is_collapsed: return
-        self.is_collapsed = False
-        self.central_widget.show()
+        # Scroll Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { background-color: #1F2329; border: none; }")
         
-        self.expand_anim = QPropertyAnimation(self, b"geometry")
-        self.expand_anim.setDuration(150)
-        self.expand_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.expand_anim.setEndValue(self.normal_geometry)
-        self.expand_anim.start()
+        self.container = QWidget()
+        self.container_layout = QVBoxLayout(self.container)
+        self.container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container_layout.setSpacing(2)
+        
+        scroll.setWidget(self.container)
+        main_layout.addWidget(scroll)
+        
+        self.setStyleSheet("QMainWindow { background-color: #1F2329; }")
+    
+    def load_demo_data(self):
+        tasks1 = [
+            Task("睡觉 💤", 0, 8, "#5B859E"),
+            Task("工作 💼", 6, 14, "#E3A857"),
+            Task("运动 🏃", 12, 16, "#7FAE8A"),
+        ]
+        self.container_layout.addWidget(PersonRow("张三", tasks1))
+        
+        tasks2 = [
+            Task("会议 📊", 9, 11, "#D98E7A"),
+            Task("学习 📚", 10, 12, "#9B7FAE"),
+            Task("休息 ☕", 14, 15, "#6B9BAE"),
+        ]
+        self.container_layout.addWidget(PersonRow("李四", tasks2))
+        self.container_layout.addStretch()
 
 
 if __name__ == "__main__":
-    import sys
-    import os
     if sys.platform == "linux":
+        # Ensure xcb is used for stable rendering on Linux
         os.environ["QT_QPA_PLATFORM"] = "xcb"
+    
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
-    window = MainWindow()
+    window = ScheduleView()
     window.show()
     sys.exit(app.exec())
