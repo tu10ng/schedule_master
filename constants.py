@@ -1,0 +1,5 @@
+# 网格常量
+CELL_WIDTH_FULL = 140   
+CELL_WIDTH_SIDE = 240   
+CELL_HEIGHT = 90        
+NAME_COL_WIDTH = 100    

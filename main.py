@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""
-Schedule Master - Step 3: UI Controls & Pinning
-改进按钮逻辑与侧边栏置顶功能
-"""
 import sys
 import os
-from dataclasses import dataclass
-from typing import List, Dict
-from enum import Enum
 from datetime import date, timedelta
+from typing import List
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QHBoxLayout, QLabel, QPushButton, QScrollArea, QLineEdit
@@ -17,424 +12,12 @@ from PyQt6.QtCore import Qt, QRect, QTimer, QPropertyAnimation, QEasingCurve, QP
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QCursor, QFontMetrics
 
-
-# 网格常量
-CELL_WIDTH_FULL = 140   
-CELL_WIDTH_SIDE = 240   
-CELL_HEIGHT = 90        
-NAME_COL_WIDTH = 100    
-
-
-class ViewMode(Enum):
-    SIDEBAR = 1      
-    FULLSCREEN = 2   
-
-
-class TaskStatus(Enum):
-    TODO = "需要进行"
-    BLOCKED = "阻塞中"
-    DONE = "已完成"
-
-
-@dataclass
-class Task:
-    title: str
-    person: str
-    date: date
-    start_hour: int = 9
-    duration: int = 2
-    color: str = "#2E3440"
-    status: TaskStatus = TaskStatus.TODO
-    id: str = ""
-
-    def __post_init__(self):
-        if not self.id:
-            import uuid
-            self.id = str(uuid.uuid4())[:8]
-
-
-class InlineEditor(QLineEdit):
-    def __init__(self, parent, rect, callback):
-        super().__init__(parent)
-        self.callback = callback
-        self.finalized = False
-        self.setGeometry(rect)
-        self.setStyleSheet("""
-            QLineEdit { 
-                background: #2A3039; 
-                color: white; 
-                border: 2px solid #4A90E2; 
-                padding: 2px;
-                font-family: 'Consolas';
-                font-size: 11px;
-            }
-        """)
-        self.setFocus()
-        self.returnPressed.connect(self.finalize)
-        
-    def finalize(self):
-        if self.finalized: return
-        self.finalized = True
-        if self.text().strip():
-            self.callback(self.text().strip())
-        self.deleteLater()
-
-    def focusOutEvent(self, event):
-        # 失去焦点时自动提交，实现“无感”转化
-        self.finalize()
-        super().focusOutEvent(event)
-
-
-class CustomTitleBar(QWidget):
-    """专用标题栏，控制窗口移动和基础 UI"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(35)
-        self.setStyleSheet("background-color: #2A3039;")
-        self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(10, 0, 5, 0)
-        self.layout.setSpacing(5)
-        
-        self.title_label = QLabel("📋 ONI")
-        self.title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-family: 'Consolas';")
-        self.layout.addWidget(self.title_label)
-        self.layout.addStretch()
-
-        # 钉住按钮 (仅在需要时外部控制显示)
-        self.pin_btn = QPushButton("📌")
-        self.pin_btn.setFixedSize(30, 30)
-        self.pin_btn.setCheckable(True)
-        self.pin_btn.setStyleSheet("""
-            QPushButton { background: transparent; color: white; border: none; font-size: 14px; }
-            QPushButton:hover { background: #3A4049; }
-            QPushButton:checked { background: #4A90E2; color: #FFFFFF; border-radius: 4px; }
-        """)
-        self.layout.addWidget(self.pin_btn)
-        
-        self.toggle_btn = QPushButton("→")
-        self.toggle_btn.setFixedSize(30, 30)
-        self.toggle_btn.setStyleSheet("""
-            QPushButton { background: #3A4049; color: white; border: none; border-radius: 40px; font-weight: bold; font-size: 16px; }
-            QPushButton:hover { background: #4A5059; }
-        """)
-        self.layout.addWidget(self.toggle_btn)
-        
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setFixedSize(30, 30)
-        self.close_btn.setStyleSheet("QPushButton { background: transparent; color: white; border: none; } QPushButton:hover { background: #e81123; }")
-        self.layout.addWidget(self.close_btn)
-
-    def mousePressEvent(self, event):
-        if self.window().current_mode == ViewMode.SIDEBAR:
-            return  # 侧边栏模式禁止通过标题栏移动窗口
-            
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.window().drag_pos = event.globalPosition().toPoint() - self.window().pos()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if self.window().current_mode == ViewMode.FULLSCREEN:
-            if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self.window(), 'drag_pos'):
-                self.window().move(event.globalPosition().toPoint() - self.window().drag_pos)
-                event.accept()
-
-
-class GridPersonRow(QWidget):
-    def __init__(self, person_name: str, tasks: List[Task], 
-                 start_date: date, days: int, col_widths: List[int], parent=None):
-        super().__init__(parent)
-        self.person_name, self.tasks, self.start_date, self.days = person_name, tasks, start_date, days
-        self.days, self.col_widths = days, col_widths
-        self.col_offsets = self.calculate_offsets()
-        self._strikethrough_progress = {} # task_id -> progress (0.0 to 1.0)
-        self._current_anim_task_id = None # 用于动画属性追踪
-        self.update_date_map()
-        self.setFixedHeight(CELL_HEIGHT)
-        # 固定最小宽度为总列宽之和 + 人名列宽
-        self.setMinimumWidth(sum(col_widths) + NAME_COL_WIDTH)
-        
-        # 初始化音效
-        self.click_sound = QSoundEffect()
-
-    def calculate_offsets(self):
-        offsets = [0] * len(self.col_widths)
-        curr = 0
-        for i in range(len(self.col_widths)):
-            offsets[i] = curr
-            curr += self.col_widths[i]
-        return offsets
-
-    def update_date_map(self):
-        self.date_map = {}
-        for t in self.tasks:
-            if t.date not in self.date_map: self.date_map[t.date] = []
-            self.date_map[t.date].append(t)
-
-    def get_strikethrough(self, task_id):
-        return self._strikethrough_progress.get(task_id, 0.0)
-        
-    def _set_strikes(self, val):
-        if self._current_anim_task_id:
-            self._strikethrough_progress[self._current_anim_task_id] = val
-        self.update()
-
-    def _get_strikes(self):
-        if self._current_anim_task_id:
-            return self._strikethrough_progress.get(self._current_anim_task_id, 0.0)
-        return 0.0
-
-    strikes = pyqtProperty(float, _get_strikes, _set_strikes)
-
-    def update_tasks(self, tasks, col_widths=None):
-        """核心修复：更新任务列表时必须重构日期映射"""
-        if col_widths is not None:
-            self.col_widths = col_widths
-            self.col_offsets = self.calculate_offsets()
-            self.setMinimumWidth(sum(col_widths) + NAME_COL_WIDTH)
-        self.tasks = tasks
-        self.update_date_map()
-        self.update()
-    
-    def get_col_rect(self, i):
-        return QRect(self.col_offsets[i] + NAME_COL_WIDTH, 0, self.col_widths[i], CELL_HEIGHT)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#1F2329"))
-        
-        # 1. 绘制名字单元格
-        name_rect = QRect(0, 0, NAME_COL_WIDTH, CELL_HEIGHT)
-        painter.fillRect(name_rect, QColor("#2A3039"))
-        painter.setPen(QPen(QColor("#3A4049"), 2))
-        painter.drawRect(name_rect)
-        painter.setPen(QColor("#FFFFFF"))
-        painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
-        painter.drawText(name_rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, self.person_name)
-        
-        # 2. 绘制网格单元格
-        grid_pen = QPen(QColor("#3A4049"), 1)
-        
-        for i in range(self.days):
-            current_date = self.start_date + timedelta(days=i)
-            cell_x = self.col_offsets[i] + NAME_COL_WIDTH
-            cell_width = self.col_widths[i]
-            cell_rect = QRect(cell_x, 0, cell_width, CELL_HEIGHT)
-            
-            painter.setPen(grid_pen)
-            painter.drawRect(cell_rect)
-            
-            if current_date in self.date_map:
-                self.draw_tasks_in_cell(painter, cell_rect, self.date_map[current_date])
-
-    def mouseDoubleClickEvent(self, event):
-        # 双击事件现已禁用，统一使用单击逻辑
-        pass
-
-    def mousePressEvent(self, event):
-        # 寻找点击的单元格
-        x = event.position().x()
-        if x < NAME_COL_WIDTH: return
-        
-        # 识别具体的列
-        col = -1
-        rel_x = x - NAME_COL_WIDTH
-        for i, (off, w) in enumerate(zip(self.col_offsets, self.col_widths)):
-            if off <= rel_x < off + w:
-                col = i
-                break
-        if col == -1: return
-        
-        target_date = self.start_date + timedelta(days=col)
-        cell_width = self.col_widths[col]
-        
-        # 1. 检测是否点击在已有任务上
-        if target_date in self.date_map:
-            rect = QRect(self.col_offsets[col] + NAME_COL_WIDTH, 0, cell_width, CELL_HEIGHT)
-            tasks = self.date_map[target_date]
-            spacing = 4
-            available_h = rect.height() - (spacing * 2)
-            block_h = min(24, (available_h - (len(tasks) - 1) * 2) // len(tasks))
-            
-            for idx, task in enumerate(tasks):
-                y = spacing + idx * (block_h + 2)
-                task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
-                
-                if task_rect.contains(event.position().toPoint()):
-                    # 右侧状态开关区域检测 (总宽度约 80px)
-                    sw_w = 80
-                    sw_rect = QRect(task_rect.right() - sw_w, y, sw_w, block_h)
-                    if sw_rect.contains(event.position().toPoint()):
-                        # 计算点击了哪一小块
-                        local_x = event.position().x() - sw_rect.x()
-                        seg_w = sw_w / 3
-                        if local_x < seg_w:
-                            task.status = TaskStatus.TODO
-                        elif local_x < seg_w * 2:
-                            task.status = TaskStatus.BLOCKED
-                        else:
-                            task.status = TaskStatus.DONE
-                            self.animate_strikethrough(task)
-                        
-                        if self.click_sound.isLoaded(): self.click_sound.play()
-                        self.update()
-                        return
-                    
-                    # 否则开始拖拽该任务 (如果有移动)
-                    main_window = self.window()
-                    if hasattr(main_window, "start_task_drag"):
-                        offset = event.position().toPoint() - QPoint(rect.x() + 4, y)
-                        main_window.start_task_drag(task, self, offset)
-                        return
-        
-        # 2. 如果点击的是空白区域，直接触发创建
-        # 计算输入框位置 (在点击处垂直居中一个 24px 高的输入框)
-        click_y = event.position().y()
-        rect_editor = QRect(self.col_offsets[col] + NAME_COL_WIDTH + 4, int(click_y - 12), cell_width - 8, 24)
-        
-        def create_task(title):
-            new_task = Task(title=title, person=self.person_name, date=target_date)
-            main_window = self.window()
-            if hasattr(main_window, "add_task"):
-                main_window.add_task(new_task)
-
-        self.editor = InlineEditor(self, rect_editor, create_task)
-        self.editor.show()
-        
-        super().mousePressEvent(event)
-
-    def cycle_task_status(self, task):
-        # TODO -> BLOCKED -> DONE -> TODO
-        if task.status == TaskStatus.TODO:
-            task.status = TaskStatus.BLOCKED
-        elif task.status == TaskStatus.BLOCKED:
-            task.status = TaskStatus.DONE
-            self.animate_strikethrough(task)
-        else:
-            task.status = TaskStatus.TODO
-            self._strikethrough_progress[task.id] = 0.0
-            
-        # 播放音效 (如果有)
-        if self.click_sound.isLoaded():
-            self.click_sound.play()
-            
-        self.update()
-
-    def animate_strikethrough(self, task):
-        self._current_anim_task_id = task.id
-        self._anim = QPropertyAnimation(self, b"strikes")
-        self._anim.setDuration(400)
-        self._anim.setStartValue(0.0)
-        self._anim.setEndValue(1.0)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self._anim.start()
-
-    def draw_tasks_in_cell(self, painter: QPainter, rect: QRect, tasks: List[Task]):
-        count = len(tasks)
-        if count == 0: return
-        spacing = 4
-        available_h = rect.height() - (spacing * 2)
-        block_h = min(24, (available_h - (count - 1) * 2) // count)
-        
-        for idx, task in enumerate(tasks):
-            y = spacing + idx * (block_h + 2)
-            task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
-            
-            # 1. 背景 (默认为白色)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.fillRect(task_rect, QColor(task.color))
-            
-            # 2. 绘制右侧状态开关 (待办 | 阻塞 | 完成) - 使用小字体
-            sw_w = 80
-            sw_rect = QRect(task_rect.right() - sw_w, y, sw_w, block_h)
-            painter.setFont(QFont("Microsoft YaHei", 7, QFont.Weight.Bold))
-            
-            segments = [
-                (TaskStatus.TODO, "待办", "#5B859E"),
-                (TaskStatus.BLOCKED, "阻塞", "#E3A857"),
-                (TaskStatus.DONE, "完成", "#7FAE8A")
-            ]
-            
-            seg_w = sw_w // 3
-            for i, (status, label, color) in enumerate(segments):
-                seg_rect = QRect(sw_rect.x() + i * seg_w, sw_rect.y(), seg_w, block_h)
-                if task.status == status:
-                    # 激活态：有色背景 + 白色文字
-                    painter.fillRect(seg_rect, QColor(color))
-                    painter.setPen(QColor("#FFFFFF"))
-                else:
-                    # 未激活：深灰色背景 + 灰度文字
-                    painter.fillRect(seg_rect, QColor("#3A4049"))
-                    painter.setPen(QColor("#888888"))
-                
-                painter.drawText(seg_rect, Qt.AlignmentFlag.AlignCenter, label)
-                # 分隔线
-                if i < 2:
-                    painter.setPen(QPen(QColor("#1F2329"), 1))
-                    painter.drawLine(seg_rect.right(), seg_rect.top(), seg_rect.right(), seg_rect.bottom())
-
-            # 3. 边框
-            painter.setPen(QPen(QColor("#3A4049"), 2)) # 加深边框感
-            painter.drawRect(task_rect)
-            
-            # 4. 任务标题文字
-            painter.setPen(QColor("#FFFFFF")) # 恢复白色文字 (背景变深了)
-            painter.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold)) # 正确字体：16px 约等于 12pt
-            text_rect = task_rect.adjusted(12, 0, -sw_w - 5, 0)
-            metrics = painter.fontMetrics()
-            elided_text = metrics.elidedText(task.title, Qt.TextElideMode.ElideRight, text_rect.width())
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_text)
-            
-            # 5. 划线动画 (如果是已完成)
-            progress = self.get_strikethrough(task.id)
-            if task.status == TaskStatus.DONE and progress > 0:
-                painter.setPen(QPen(QColor("#FF4444"), 2))
-                text_width = metrics.horizontalAdvance(elided_text)
-                line_y = text_rect.center().y()
-                painter.drawLine(text_rect.x(), line_y, int(text_rect.x() + text_width * progress), line_y)
-
-
-class ModeHeader(QWidget):
-    def __init__(self, start_date: date, days: int, col_widths: List[int], mode: ViewMode, parent=None):
-        super().__init__(parent)
-        self.start_date, self.days, self.mode = start_date, days, mode
-        self.col_widths = col_widths
-        self.setFixedHeight(40)
-        self.setMinimumWidth(sum(col_widths) + NAME_COL_WIDTH)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#2A3039"))
-        
-        # 名字部分
-        painter.setPen(QPen(QColor("#3A4049"), 1))
-        painter.drawRect(0, 0, NAME_COL_WIDTH, 40)
-        
-        # 分享列计算
-        offsets = []
-        curr = 0
-        for w in self.col_widths:
-            offsets.append(curr)
-            curr += w
-        
-        for i in range(self.days):
-            current_date = self.start_date + timedelta(days=i)
-            cell_x = offsets[i] + NAME_COL_WIDTH
-            cell_width = self.col_widths[i]
-            header_rect = QRect(cell_x, 0, cell_width, 40)
-            
-            painter.setPen(QPen(QColor("#3A4049"), 1))
-            painter.drawRect(header_rect)
-            painter.setPen(QColor("#888888"))
-            painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
-            
-            if self.mode == ViewMode.SIDEBAR:
-                title = "今日任务 (TODAY)"
-            else:
-                title = current_date.strftime("%m/%d ") + ["周一","周二","周三","周四","周五","周六","周日"][current_date.weekday()]
-                
-            painter.drawText(header_rect, Qt.AlignmentFlag.AlignCenter, title)
-
+# Import modular components and models
+from models import ViewMode, TaskStatus, Task
+from constants import CELL_WIDTH_FULL, CELL_WIDTH_SIDE, CELL_HEIGHT, NAME_COL_WIDTH
+from components.title_bar import CustomTitleBar
+from components.grid_row import GridPersonRow
+from components.header import ModeHeader
 
 class ScheduleView(QMainWindow):
     def __init__(self):
@@ -464,7 +47,7 @@ class ScheduleView(QMainWindow):
         self.dragging_task = None
         self.drag_ghost_pos = QPoint()
         self.drag_origin_row = None
-        self.drag_target_info = None # (person_name, date, index)
+        self.drag_target_info = None # (person_name, date)
         
         self.init_ui()
         self.load_demo_data()
@@ -637,23 +220,21 @@ class ScheduleView(QMainWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         if self.is_collapsed: self.expand_sidebar()
         
-        # 1. 唯一一次更新 UI 结构（不改变 Flag，不透明化）
+        # 1. 唯一一次更新 UI 结构
         self.current_mode = target_mode
         self.update_ui_state(target_mode)
         
-        # 2. 计算目标尺寸 (Y轴和高度始终保持同步)
+        # 2. 计算目标尺寸
         if target_mode == ViewMode.FULLSCREEN:
             w = 1100
         else:
-            # 侧边栏模式从 rebuild_content 已经算好的几何位置获取宽度
             w = self.sidebar_geometry.width()
-            if w < 100: w = 360 # 保底宽度
+            if w < 100: w = 360
             
         h = screen.height() - 100
         target_geo = QRect(screen.width() - w, 50, w, h)
         if target_mode == ViewMode.SIDEBAR: self.sidebar_geometry = target_geo
         
-        # 3. 开始丝滑拉伸动画 (不涉及窗口重绘/Flags改变)
         self.anim = QPropertyAnimation(self, b"geometry")
         self.anim.setDuration(400)
         self.anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -663,12 +244,11 @@ class ScheduleView(QMainWindow):
     def update_ui_state(self, mode: ViewMode):
         """更新按钮和可见性"""
         if mode == ViewMode.SIDEBAR:
-            # 侧边栏隐藏拖拽标题文字，仅保留按钮
             self.custom_title_bar.title_label.hide()
             self.pin_btn.show()
             self.toggle_btn.setText("←")
             self.setMouseTracking(True)
-            self.setWindowOpacity(0.85) # 侧边栏模式半透明
+            self.setWindowOpacity(0.85)
         else:
             self.custom_title_bar.show()
             self.custom_title_bar.title_label.show()
@@ -677,16 +257,8 @@ class ScheduleView(QMainWindow):
             self.is_pinned = False
             self.pin_btn.setChecked(False)
             self.setMouseTracking(False)
-            self.setWindowOpacity(1.0) # 全屏恢复不透明
+            self.setWindowOpacity(1.0)
         self.rebuild_content()
-
-    def finalize_mode(self, mode: ViewMode):
-        self.update_ui_state(mode)
-        self.show()
-
-    def show_fullscreen_mode(self):
-        # 初始显示
-        pass 
 
     def enterEvent(self, event):
         if self.current_mode == ViewMode.SIDEBAR and self.is_collapsed: self.expand_sidebar()
@@ -708,7 +280,6 @@ class ScheduleView(QMainWindow):
         target_rect = QRect(screen.width() - self.collapsed_width, self.y(), self.collapsed_width, self.height())
         self.coll_anim.setEndValue(target_rect)
         
-        # 动画开始后稍晚一点隐藏内容，保持平滑感
         QTimer.singleShot(150, lambda: self.main_widget.hide() if self.is_collapsed else None)
         self.coll_anim.start()
 
@@ -721,23 +292,16 @@ class ScheduleView(QMainWindow):
         self.exp_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
         self.exp_anim.setEndValue(self.sidebar_geometry)
         
-        # 展开前显示内容
         self.main_widget.show()
         self.exp_anim.start()
 
     # --- 拖拽系统实现 ---
-    
-    def mousePressEvent(self, event):
-        # 注意：此处的主窗口 mousePress 不再负责移动，由 CustomTitleBar 接管
-        # 从而避免干扰 GridPersonRow 的点击/拖拽检测
-        pass
-
     def start_task_drag(self, task, row_widget, offset):
         self.dragging_task = task
         self.drag_origin_row = row_widget
         self.drag_offset = offset
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        self.grabMouse() # 关键：夺取鼠标控制权，确保 move 事件传给 ScheduleView
+        self.grabMouse()
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -749,13 +313,12 @@ class ScheduleView(QMainWindow):
 
     def mouseReleaseEvent(self, event):
         if self.dragging_task:
-            self.releaseMouse() # 释放鼠标控制权
+            self.releaseMouse()
             self.finalize_task_drag()
             self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
 
     def update_drag_preview(self, global_point):
-        # 寻找目标行和日期
         local_pos = self.scroll.widget().mapFromGlobal(self.mapToGlobal(global_point))
         target_row = None
         for i in range(1, self.container_layout.count()):
@@ -768,7 +331,6 @@ class ScheduleView(QMainWindow):
         if target_row:
             x_in_row = local_pos.x() - target_row.x() - NAME_COL_WIDTH
             if x_in_row >= 0:
-                # 识别具体的列 (适配动态宽)
                 col = -1
                 for i, (off, w) in enumerate(zip(target_row.col_offsets, target_row.col_widths)):
                     if off <= x_in_row < off + w:
@@ -789,12 +351,11 @@ class ScheduleView(QMainWindow):
         if self.drag_target_info:
             target_p, target_d = self.drag_target_info
             
-            # 2. 拖动后自动回到 TODO 状态，并强制重置该任务的所有划线进度
             self.dragging_task.person = target_p
             self.dragging_task.date = target_d
             self.dragging_task.status = TaskStatus.TODO
             
-            # 遍边所有行，清除该任务的本地动画进度缓存
+            # 清除划线进度
             for i in range(1, self.container_layout.count()):
                 w = self.container_layout.itemAt(i).widget()
                 if isinstance(w, GridPersonRow):
@@ -812,14 +373,12 @@ class ScheduleView(QMainWindow):
         if self.dragging_task:
             painter = QPainter(self)
             painter.setOpacity(0.7)
-            # 绘制幽灵块 (根据全屏/侧边栏调整宽度)
             w = CELL_WIDTH_SIDE - 20 if self.current_mode == ViewMode.SIDEBAR else CELL_WIDTH_FULL - 20
             rect = QRect(self.drag_ghost_pos.x(), self.drag_ghost_pos.y(), int(w), 24)
             painter.fillRect(rect, QColor(self.dragging_task.color))
             painter.setPen(QPen(Qt.GlobalColor.white, 1))
             painter.drawRect(rect)
             painter.drawText(rect.adjusted(5,0,0,0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.dragging_task.title)
-
 
 if __name__ == "__main__":
     if sys.platform == "linux": os.environ["QT_QPA_PLATFORM"] = "xcb"
