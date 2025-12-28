@@ -215,6 +215,20 @@ class GridPersonRow(QWidget):
         col = int(x // cell_width)
         target_date = self.start_date + timedelta(days=col)
         
+        # 核心改进：检测是否点击在已有任务上
+        if target_date in self.date_map:
+            rect = QRect(int(col * cell_width) + NAME_COL_WIDTH, 0, int(cell_width), CELL_HEIGHT)
+            tasks = self.date_map[target_date]
+            spacing = 4
+            available_h = rect.height() - (spacing * 2)
+            block_h = min(24, (available_h - (len(tasks) - 1) * 2) // len(tasks))
+            
+            for idx, task in enumerate(tasks):
+                y = spacing + idx * (block_h + 2)
+                task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
+                if task_rect.contains(event.position().toPoint()):
+                    return  # 双击已有任务，禁止弹出创建框
+        
         # 计算输入框位置 (在双击处垂直居中一个 24px 高的输入框)
         click_y = event.position().y()
         rect = QRect(int(col * cell_width) + NAME_COL_WIDTH + 4, int(click_y - 12), int(cell_width) - 8, 24)
@@ -256,7 +270,11 @@ class GridPersonRow(QWidget):
                         self.cycle_task_status(task)
                         return
                     
-                    # 否则开始拖拽该任务
+                    # 任务主体点击 (处理预留：将来用于展开详情)
+                    # if event.button() == Qt.MouseButton.LeftButton:
+                    #     self.expand_task_detail(task) # 后续需求
+                    
+                    # 否则开始拖拽该任务 (如果有移动)
                     main_window = self.window()
                     if hasattr(main_window, "start_task_drag"):
                         offset = event.position().toPoint() - QPoint(rect.x() + 4, y)
