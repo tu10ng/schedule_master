@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
 Schedule Master - Oxygen Not Included Style
-多轨平铺任务管理工具
+多轨平铺任务管理工具 - 双模式视图
 """
 import sys
 import os
 from dataclasses import dataclass
 from typing import List
+from enum import Enum
+from datetime import datetime, date
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
-    QHBoxLayout, QLabel, QScrollArea
+    QHBoxLayout, QLabel, QScrollArea, QPushButton
 )
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtCore import Qt, QRectF, QRect, QTimer, QPropertyAnimation, QEasingCurve, QPoint
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QFont, 
-    QLinearGradient
+    QLinearGradient, QCursor
 )
+
+
+class ViewMode(Enum):
+    """视图模式"""
+    SIDEBAR = 1      # 侧边栏模式
+    FULLSCREEN = 2   # 全屏模式
 
 
 @dataclass
@@ -25,7 +33,8 @@ class Task:
     start_hour: float  # 0-24
     end_hour: float    # 0-24
     color: str
-    track: int = 0  # 自动计算的轨道编号
+    date: date = None  # 任务日期
+    track: int = 0     # 自动计算的轨道编号
 
 
 class MultiTrackLayoutEngine:
@@ -45,10 +54,7 @@ class MultiTrackLayoutEngine:
         if not tasks:
             return 0
         
-        # 按开始时间排序
         sorted_tasks = sorted(tasks, key=lambda t: t.start_hour)
-        
-        # 跟踪每个轨道的最后结束时间
         track_end_times = []
         
         for task in sorted_tasks:
@@ -157,11 +163,11 @@ class TimelineCanvas(QWidget):
 
 class PersonRow(QWidget):
     """人员行组件"""
-    def __init__(self, person_name: str, tasks: List[Task], parent=None):
+    def __init__(self, person_name: str, tasks: List[Task], timeline_width: int = 960, parent=None):
         super().__init__(parent)
         self.person_name = person_name
         self.tasks = tasks
-        self.timeline_width = 960
+        self.timeline_width = timeline_width
         self.track_height = 40
         self.track_spacing = 5
         
@@ -227,75 +233,344 @@ class TimelineHeader(QWidget):
 
 
 class ScheduleView(QMainWindow):
-    """主视图"""
+    """主视图 - 支持双模式"""
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Schedule Master - ONI Style")
-        self.resize(1200, 600)
+        
+        # 视图模式
+        self.current_mode = ViewMode.FULLSCREEN
+        self.is_collapsed = False  # 侧边栏折叠状态
+        self.collapsed_width = 5
+        
+        # 定时器
+        self.collapse_timer = QTimer()
+        self.collapse_timer.setSingleShot(True)
+        self.collapse_timer.timeout.connect(self.collapse_sidebar)
+        
+        # 几何状态
+        self.sidebar_geometry = QRect()
+        self.fullscreen_geometry = QRect()
+        
+        # 数据
+        self.all_tasks = []
+        
         self.init_ui()
         self.load_demo_data()
+        self.show_fullscreen_mode()  # 默认全屏模式
     
     def init_ui(self):
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        """初始化UI"""
+        self.main_widget = QWidget()
+        self.setCentralWidget(self.main_widget)
+        self.main_layout = QVBoxLayout(self.main_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
         
-        # Header
-        header = QWidget()
-        header.setFixedHeight(40)
-        header.setStyleSheet("background-color: #2A3039;")
-        h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(0, 0, 0, 0)
-        h_layout.setSpacing(0)
+        self.create_title_bar()
+        self.create_content_area()
         
-        spacer = QWidget()
-        spacer.setFixedWidth(120)
-        spacer.setStyleSheet("border-right: 2px solid #3A4049;")
-        h_layout.addWidget(spacer)
+        self.setStyleSheet("QMainWindow { background-color: #1F2329; }")
+    
+    def create_title_bar(self):
+        """创建标题栏"""
+        self.title_bar = QWidget()
+        self.title_bar.setFixedHeight(35)
+        self.title_bar.setStyleSheet("background-color: #2A3039;")
         
-        self.timeline_header = TimelineHeader(960)
-        h_layout.addWidget(self.timeline_header)
-        h_layout.addStretch()
+        layout = QHBoxLayout(self.title_bar)
+        layout.setContentsMargins(10, 0, 5, 0)
+        layout.setSpacing(10)
         
-        main_layout.addWidget(header)
+        title_label = QLabel("📋 Schedule Master")
+        title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 13px;")
+        layout.addWidget(title_label)
+        layout.addStretch()
         
-        # Scroll Area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { background-color: #1F2329; border: none; }")
+        # 切换按钮
+        self.toggle_btn = QPushButton("⛶")
+        self.toggle_btn.setFixedSize(30, 30)
+        self.toggle_btn.setToolTip("切换侧边栏模式")
+        self.toggle_btn.clicked.connect(self.toggle_view_mode)
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(74, 144, 226, 0.6);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(91, 163, 245, 0.8);
+            }
+        """)
+        layout.addWidget(self.toggle_btn)
+        
+        # 关闭按钮
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(30, 30)
+        close_btn.clicked.connect(QApplication.quit)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: white;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton:hover { background: #e81123; }
+        """)
+        layout.addWidget(close_btn)
+        
+        self.main_layout.addWidget(self.title_bar)
+    
+    def create_content_area(self):
+        """创建内容区域"""
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { background-color: #1F2329; border: none; }")
         
         self.container = QWidget()
         self.container_layout = QVBoxLayout(self.container)
         self.container_layout.setContentsMargins(0, 0, 0, 0)
         self.container_layout.setSpacing(2)
         
-        scroll.setWidget(self.container)
-        main_layout.addWidget(scroll)
-        
-        self.setStyleSheet("QMainWindow { background-color: #1F2329; }")
+        self.scroll_area.setWidget(self.container)
+        self.main_layout.addWidget(self.scroll_area)
     
     def load_demo_data(self):
-        tasks1 = [
-            Task("睡觉 💤", 0, 8, "#5B859E"),
-            Task("工作 💼", 6, 14, "#E3A857"),
-            Task("运动 🏃", 12, 16, "#7FAE8A"),
-        ]
-        self.container_layout.addWidget(PersonRow("张三", tasks1))
+        """加载演示数据"""
+        today = date.today()
         
-        tasks2 = [
-            Task("会议 📊", 9, 11, "#D98E7A"),
-            Task("学习 📚", 10, 12, "#9B7FAE"),
-            Task("休息 ☕", 14, 15, "#6B9BAE"),
+        self.all_tasks = [
+            ("张三", [
+                Task("睡觉 💤", 0, 8, "#5B859E", today),
+                Task("工作 💼", 6, 14, "#E3A857", today),
+                Task("运动 🏃", 12, 16, "#7FAE8A", today),
+            ]),
+            ("李四", [
+                Task("会议 📊", 9, 11, "#D98E7A", today),
+                Task("学习 📚", 10, 12, "#9B7FAE", today),
+                Task("休息 ☕", 14, 15, "#6B9BAE", today),
+            ])
         ]
-        self.container_layout.addWidget(PersonRow("李四", tasks2))
+    
+    def rebuild_content(self, tasks_data):
+        """重建内容"""
+        # 清空现有内容
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # 添加header
+        if self.current_mode == ViewMode.FULLSCREEN:
+            header = self.create_fullscreen_header()
+            self.container_layout.addWidget(header)
+        
+        # 添加人员行
+        timeline_width = 960 if self.current_mode == ViewMode.FULLSCREEN else 280
+        for person_name, tasks in tasks_data:
+            row = PersonRow(person_name, tasks, timeline_width)
+            self.container_layout.addWidget(row)
+        
         self.container_layout.addStretch()
+    
+    def create_fullscreen_header(self):
+        """创建全屏模式表头"""
+        header = QWidget()
+        header.setFixedHeight(40)
+        header.setStyleSheet("background-color: #2A3039;")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        spacer = QWidget()
+        spacer.setFixedWidth(120)
+        spacer.setStyleSheet("border-right: 2px solid #3A4049;")
+        layout.addWidget(spacer)
+        
+        timeline_header = TimelineHeader(960)
+        layout.addWidget(timeline_header)
+        layout.addStretch()
+        
+        return header
+    
+    def toggle_view_mode(self):
+        """切换视图模式"""
+        if self.current_mode == ViewMode.FULLSCREEN:
+            self.animate_to_sidebar()
+        else:
+            self.animate_to_fullscreen()
+    
+    def animate_to_sidebar(self):
+        """动画切换到侧边栏模式"""
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        # 保存当前几何
+        self.fullscreen_geometry = self.geometry()
+        
+        # 目标几何（右侧边缘）
+        target_width = 350
+        target_height = screen.height() - 100
+        target_x = screen.width() - target_width
+        target_y = 50
+        
+        self.sidebar_geometry = QRect(target_x, target_y, target_width, target_height)
+        
+        # 动画
+        self.animation = QPropertyAnimation(self, b"geometry")
+        self.animation.setDuration(400)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.animation.setStartValue(self.geometry())
+        self.animation.setEndValue(self.sidebar_geometry)
+        self.animation.finished.connect(lambda: self.finalize_sidebar_mode())
+        self.animation.start()
+        
+        self.current_mode = ViewMode.SIDEBAR
+    
+    def finalize_sidebar_mode(self):
+        """完成侧边栏模式切换"""
+        # 更新窗口标志
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.show()
+        
+        # 重建内容（只显示今日任务）
+        today_tasks = [(name, tasks) for name, tasks in self.all_tasks]
+        self.rebuild_content(today_tasks)
+        
+        # 更新按钮
+        self.toggle_btn.setText("▬")
+        self.toggle_btn.setToolTip("切换全屏模式")
+        
+        # 启用鼠标追踪
+        self.setMouseTracking(True)
+    
+    def animate_to_fullscreen(self):
+        """动画切换到全屏模式"""
+        if self.is_collapsed:
+            self.expand_sidebar()
+        
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        # 目标几何（居中）
+        target_width = 1200
+        target_height = 700
+        target_x = (screen.width() - target_width) // 2
+        target_y = (screen.height() - target_height) // 2
+        
+        self.fullscreen_geometry = QRect(target_x, target_y, target_width, target_height)
+        
+        # 动画
+        self.animation = QPropertyAnimation(self, b"geometry")
+        self.animation.setDuration(400)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.animation.setStartValue(self.geometry())
+        self.animation.setEndValue(self.fullscreen_geometry)
+        self.animation.finished.connect(lambda: self.finalize_fullscreen_mode())
+        self.animation.start()
+        
+        self.current_mode = ViewMode.FULLSCREEN
+    
+    def finalize_fullscreen_mode(self):
+        """完成全屏模式切换"""
+        # 更新窗口标志（移除置顶）
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.show()
+        
+        # 重建内容
+        self.rebuild_content(self.all_tasks)
+        
+        # 更新按钮
+        self.toggle_btn.setText("⛶")
+        self.toggle_btn.setToolTip("切换侧边栏模式")
+        
+        self.setMouseTracking(False)
+    
+    def show_sidebar_mode(self):
+        """显示侧边栏模式（无动画）"""
+        screen = QApplication.primaryScreen().availableGeometry()
+        target_width = 350
+        target_height = screen.height() - 100
+        self.setGeometry(screen.width() - target_width, 50, target_width, target_height)
+        self.current_mode = ViewMode.SIDEBAR
+        self.finalize_sidebar_mode()
+    
+    def show_fullscreen_mode(self):
+        """显示全屏模式（无动画）"""
+        screen = QApplication.primaryScreen().availableGeometry()
+        target_width = 1200
+        target_height = 700
+        self.setGeometry((screen.width() - target_width) // 2, 
+                        (screen.height() - target_height) // 2,
+                        target_width, target_height)
+        self.current_mode = ViewMode.FULLSCREEN
+        self.finalize_fullscreen_mode()
+    
+    # 侧边栏折叠功能
+    def enterEvent(self, event):
+        """鼠标进入"""
+        if self.current_mode == ViewMode.SIDEBAR and self.is_collapsed:
+            self.expand_sidebar()
+        self.collapse_timer.stop()
+    
+    def leaveEvent(self, event):
+        """鼠标离开"""
+        if self.current_mode == ViewMode.SIDEBAR and not self.is_collapsed:
+            if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+                self.collapse_timer.start(200)
+    
+    def collapse_sidebar(self):
+        """折叠侧边栏"""
+        if self.current_mode != ViewMode.SIDEBAR or self.is_collapsed:
+            return
+        
+        self.is_collapsed = True
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        anim = QPropertyAnimation(self, b"geometry")
+        anim.setDuration(200)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        target = QRect(screen.width() - self.collapsed_width, self.y(), 
+                      self.collapsed_width, self.height())
+        anim.setEndValue(target)
+        
+        QTimer.singleShot(50, lambda: self.main_widget.hide())
+        anim.start()
+        self.collapse_anim = anim
+    
+    def expand_sidebar(self):
+        """展开侧边栏"""
+        if not self.is_collapsed:
+            return
+        
+        self.is_collapsed = False
+        self.main_widget.show()
+        
+        anim = QPropertyAnimation(self, b"geometry")
+        anim.setDuration(150)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setEndValue(self.sidebar_geometry)
+        anim.start()
+        self.expand_anim = anim
+    
+    def mousePressEvent(self, event):
+        """鼠标按下 - 拖动窗口"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_pos = event.globalPosition().toPoint() - self.pos()
+    
+    def mouseMoveEvent(self, event):
+        """鼠标移动 - 拖动窗口"""
+        if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, 'drag_pos'):
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
 
 
 if __name__ == "__main__":
     if sys.platform == "linux":
-        # Ensure xcb is used for stable rendering on Linux
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     
     app = QApplication(sys.argv)
