@@ -207,44 +207,11 @@ class GridPersonRow(QWidget):
                 self.draw_tasks_in_cell(painter, cell_rect, self.date_map[current_date])
 
     def mouseDoubleClickEvent(self, event):
-        # 寻找双击的单元格
-        x = event.position().x() - NAME_COL_WIDTH
-        if x < 0: return
-        
-        cell_width = self.get_cell_width()
-        col = int(x // cell_width)
-        target_date = self.start_date + timedelta(days=col)
-        
-        # 核心改进：检测是否点击在已有任务上
-        if target_date in self.date_map:
-            rect = QRect(int(col * cell_width) + NAME_COL_WIDTH, 0, int(cell_width), CELL_HEIGHT)
-            tasks = self.date_map[target_date]
-            spacing = 4
-            available_h = rect.height() - (spacing * 2)
-            block_h = min(24, (available_h - (len(tasks) - 1) * 2) // len(tasks))
-            
-            for idx, task in enumerate(tasks):
-                y = spacing + idx * (block_h + 2)
-                task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
-                if task_rect.contains(event.position().toPoint()):
-                    return  # 双击已有任务，禁止弹出创建框
-        
-        # 计算输入框位置 (在双击处垂直居中一个 24px 高的输入框)
-        click_y = event.position().y()
-        rect = QRect(int(col * cell_width) + NAME_COL_WIDTH + 4, int(click_y - 12), int(cell_width) - 8, 24)
-        
-        def create_task(title):
-            new_task = Task(title=title, person=self.person_name, date=target_date)
-            # 通知父窗体更新
-            main_window = self.window()
-            if hasattr(main_window, "add_task"):
-                main_window.add_task(new_task)
-
-        self.editor = InlineEditor(self, rect, create_task)
-        self.editor.show()
+        # 双击事件现已禁用，统一使用单击逻辑
+        pass
 
     def mousePressEvent(self, event):
-        # 检测是否点击了任务块的状态区域
+        # 寻找点击的单元格
         x = event.position().x() - NAME_COL_WIDTH
         if x < 0: return
         
@@ -252,6 +219,7 @@ class GridPersonRow(QWidget):
         col = int(x // cell_width)
         target_date = self.start_date + timedelta(days=col)
         
+        # 1. 检测是否点击在已有任务上
         if target_date in self.date_map:
             rect = QRect(int(col * cell_width) + NAME_COL_WIDTH, 0, int(cell_width), CELL_HEIGHT)
             tasks = self.date_map[target_date]
@@ -270,16 +238,26 @@ class GridPersonRow(QWidget):
                         self.cycle_task_status(task)
                         return
                     
-                    # 任务主体点击 (处理预留：将来用于展开详情)
-                    # if event.button() == Qt.MouseButton.LeftButton:
-                    #     self.expand_task_detail(task) # 后续需求
-                    
                     # 否则开始拖拽该任务 (如果有移动)
                     main_window = self.window()
                     if hasattr(main_window, "start_task_drag"):
                         offset = event.position().toPoint() - QPoint(rect.x() + 4, y)
                         main_window.start_task_drag(task, self, offset)
                         return
+        
+        # 2. 如果点击的是空白区域，直接触发创建
+        # 计算输入框位置 (在点击处垂直居中一个 24px 高的输入框)
+        click_y = event.position().y()
+        rect_editor = QRect(int(col * cell_width) + NAME_COL_WIDTH + 4, int(click_y - 12), int(cell_width) - 8, 24)
+        
+        def create_task(title):
+            new_task = Task(title=title, person=self.person_name, date=target_date)
+            main_window = self.window()
+            if hasattr(main_window, "add_task"):
+                main_window.add_task(new_task)
+
+        self.editor = InlineEditor(self, rect_editor, create_task)
+        self.editor.show()
         
         super().mousePressEvent(event)
 
@@ -420,7 +398,7 @@ class ScheduleView(QMainWindow):
             Qt.WindowType.Tool
         )
         
-        self.current_mode = ViewMode.FULLSCREEN
+        self.current_mode = ViewMode.SIDEBAR
         self.is_collapsed = False
         self.is_pinned = False
         self.collapsed_width = 8
@@ -446,8 +424,15 @@ class ScheduleView(QMainWindow):
         
         # 设置初始几何位置
         screen = QApplication.primaryScreen().availableGeometry()
-        w, h = 1100, screen.height() - 100
-        self.setGeometry(screen.width() - w, 50, w, h)
+        h = screen.height() - 100
+        
+        # 预先设置好两个模式的几何参数
+        self.fullscreen_geometry = QRect(screen.width() - 1100, 50, 1100, h)
+        self.sidebar_geometry = QRect(screen.width() - 360, 50, 360, h)
+        
+        # 以侧边栏启动
+        self.setGeometry(self.sidebar_geometry)
+        self.update_ui_state(ViewMode.SIDEBAR)
         self.show()
         self.rebuild_content()
 
