@@ -41,23 +41,24 @@ class Task:
 
 class GridPersonRow(QWidget):
     def __init__(self, person_name: str, tasks: List[Task], 
-                 start_date: date, days: int, cell_width: int, parent=None):
+                 start_date: date, days: int, parent=None):
         super().__init__(parent)
-        self.person_name = person_name
-        self.tasks = tasks
-        self.start_date = start_date
-        self.days = days
-        self.cell_width = cell_width
+        self.person_name, self.tasks, self.start_date, self.days = person_name, tasks, start_date, days
         self.date_map: Dict[date, List[Task]] = {}
         for t in tasks:
             if t.date not in self.date_map: self.date_map[t.date] = []
             self.date_map[t.date].append(t)
-        self.setFixedSize(NAME_COL_WIDTH + days * cell_width, CELL_HEIGHT)
+        self.setFixedHeight(CELL_HEIGHT)
     
+    def get_cell_width(self):
+        return (self.width() - NAME_COL_WIDTH) / self.days
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#1F2329"))
+        
+        # 1. 绘制名字单元格
         name_rect = QRect(0, 0, NAME_COL_WIDTH, CELL_HEIGHT)
         painter.fillRect(name_rect, QColor("#2A3039"))
         painter.setPen(QPen(QColor("#3A4049"), 2))
@@ -66,14 +67,19 @@ class GridPersonRow(QWidget):
         painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
         painter.drawText(name_rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, self.person_name)
         
+        # 2. 绘制网格单元格
+        cell_width = self.get_cell_width()
         painter.translate(NAME_COL_WIDTH, 0)
         grid_pen = QPen(QColor("#3A4049"), 1)
+        
         for i in range(self.days):
             current_date = self.start_date + timedelta(days=i)
-            cell_x = i * self.cell_width
-            cell_rect = QRect(cell_x, 0, self.cell_width, CELL_HEIGHT)
+            cell_x = int(i * cell_width)
+            cell_rect = QRect(cell_x, 0, int(cell_width), CELL_HEIGHT)
+            
             painter.setPen(grid_pen)
             painter.drawRect(cell_rect)
+            
             if current_date in self.date_map:
                 self.draw_tasks_in_cell(painter, cell_rect, self.date_map[current_date])
 
@@ -99,46 +105,78 @@ class GridPersonRow(QWidget):
 
 
 class ModeHeader(QWidget):
-    def __init__(self, start_date: date, days: int, cell_width: int, mode: ViewMode, parent=None):
+    def __init__(self, start_date: date, days: int, mode: ViewMode, parent=None):
         super().__init__(parent)
-        self.start_date, self.days, self.cell_width, self.mode = start_date, days, cell_width, mode
+        self.start_date, self.days, self.mode = start_date, days, mode
         self.setFixedHeight(40)
-        self.setFixedWidth(NAME_COL_WIDTH + days * cell_width)
-        
+    
+    def get_cell_width(self):
+        return (self.width() - NAME_COL_WIDTH) / self.days
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#2A3039"))
+        
+        # 名字部分
         painter.setPen(QPen(QColor("#3A4049"), 2))
         painter.drawRect(0, 0, NAME_COL_WIDTH, 40)
+        
+        # 单元格部分
+        cell_width = self.get_cell_width()
         painter.translate(NAME_COL_WIDTH, 0)
+        
         for i in range(self.days):
             current_date = self.start_date + timedelta(days=i)
-            header_rect = QRect(i * self.cell_width, 0, self.cell_width, 40)
+            cell_x = int(i * cell_width)
+            header_rect = QRect(cell_x, 0, int(cell_width), 40)
+            
             painter.setPen(QPen(QColor("#3A4049"), 1))
             painter.drawRect(header_rect)
+            
             painter.setPen(QColor("#AAAAAA"))
             painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
-            title = "今日任务 (TODAY)" if self.mode == ViewMode.SIDEBAR else current_date.strftime("%m/%d ") + ["周一","周二","周三","周四","周五","周六","周日"][current_date.weekday()]
+            
+            if self.mode == ViewMode.SIDEBAR:
+                title = "今日任务 (TODAY)"
+            else:
+                title = current_date.strftime("%m/%d ") + ["周一","周二","周三","周四","周五","周六","周日"][current_date.weekday()]
+                
             painter.drawText(header_rect, Qt.AlignmentFlag.AlignCenter, title)
 
 
 class ScheduleView(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Schedule Master - Contextual Controls")
+        self.setWindowTitle("Schedule Master")
+        
+        # 核心变革：统一窗口 Flag，全程不修改 Flag 以避免闪烁和重建
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.Tool
+        )
+        
         self.current_mode = ViewMode.FULLSCREEN
         self.is_collapsed = False
-        self.is_pinned = False  # 侧边栏是否钉住(不自动折叠)
+        self.is_pinned = False
         self.collapsed_width = 8
         self.collapse_timer = QTimer()
         self.collapse_timer.setSingleShot(True)
         self.collapse_timer.timeout.connect(self.collapse_sidebar)
+        
         self.sidebar_geometry = QRect()
         self.fullscreen_geometry = QRect()
         self.all_tasks = []
+        
         self.init_ui()
         self.load_demo_data()
-        self.show_fullscreen_mode()
+        
+        # 设置初始几何位置
+        screen = QApplication.primaryScreen().availableGeometry()
+        w, h = 1100, screen.height() - 100
+        self.setGeometry(screen.width() - w, 50, w, h)
+        self.show()
+        self.rebuild_content()
 
     def init_ui(self):
         self.main_widget = QWidget()
@@ -214,17 +252,54 @@ class ScheduleView(QMainWindow):
         ]
 
     def rebuild_content(self):
-        while self.container_layout.count():
-            w = self.container_layout.takeAt(0).widget()
-            if w: w.deleteLater()
+        """流式更新内容，适配父窗体拉伸"""
         today = date.today()
-        days, width = (1, CELL_WIDTH_SIDE) if self.current_mode == ViewMode.SIDEBAR else (7, CELL_WIDTH_FULL)
-        self.container_layout.addWidget(ModeHeader(today, days, width, self.current_mode))
+        days = 1 if self.current_mode == ViewMode.SIDEBAR else 7
+        
+        # 1. 更新表头
+        if self.container_layout.count() > 0:
+            header = self.container_layout.itemAt(0).widget()
+            if isinstance(header, ModeHeader):
+                header.mode, header.days = self.current_mode, days
+            else:
+                self.clear_layout()
+                self.container_layout.addWidget(ModeHeader(today, days, self.current_mode))
+        else:
+            self.container_layout.addWidget(ModeHeader(today, days, self.current_mode))
+
+        # 2. 更新人员行
         persons = sorted(list(set(t.person for t in self.all_tasks)))
-        for p in persons:
+        existing_rows = []
+        for i in range(1, self.container_layout.count()):
+            w = self.container_layout.itemAt(i).widget()
+            if isinstance(w, GridPersonRow): existing_rows.append(w)
+        
+        for i, p in enumerate(persons):
             p_tasks = [t for t in self.all_tasks if t.person == p]
-            self.container_layout.addWidget(GridPersonRow(p, p_tasks, today, days, width))
-        self.container_layout.addStretch()
+            if i < len(existing_rows):
+                row = existing_rows[i]
+                row.person_name, row.tasks, row.days = p, p_tasks, days
+            else:
+                self.container_layout.insertWidget(i + 1, GridPersonRow(p, p_tasks, today, days))
+        
+        # 3. 清理冗余
+        if len(existing_rows) > len(persons):
+            for i in range(len(persons), len(existing_rows)): existing_rows[i].deleteLater()
+
+        # 4. 底部弹簧
+        if self.container_layout.count() > 0:
+            last = self.container_layout.itemAt(self.container_layout.count()-1)
+            if not last or not last.spacerItem(): self.container_layout.addStretch()
+        
+        self.update()
+
+        if self.container_layout.count() > 0 and not isinstance(self.container_layout.itemAt(self.container_layout.count()-1), QWidget):
+             self.container_layout.addStretch()
+
+    def clear_layout(self):
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
 
     def toggle_view_mode(self):
         self.animate_transition(ViewMode.SIDEBAR if self.current_mode == ViewMode.FULLSCREEN else ViewMode.FULLSCREEN)
@@ -240,48 +315,46 @@ class ScheduleView(QMainWindow):
 
     def animate_transition(self, target_mode: ViewMode):
         screen = QApplication.primaryScreen().availableGeometry()
-        if self.current_mode == ViewMode.FULLSCREEN: self.fullscreen_geometry = self.geometry()
+        if self.is_collapsed: self.expand_sidebar()
         
-        if target_mode == ViewMode.SIDEBAR:
-            w, h = 360, screen.height() - 100
-            target_geo = QRect(screen.width() - w, 50, w, h)
-            self.sidebar_geometry = target_geo
-        else:
-            if self.is_collapsed: self.expand_sidebar()
-            w, h = 1100, 600
-            target_geo = QRect((screen.width() - w)//2, (screen.height() - h)//2, w, h)
-            
+        # 1. 唯一一次更新 UI 结构（不改变 Flag，不透明化）
+        self.current_mode = target_mode
+        self.update_ui_state(target_mode)
+        
+        # 2. 计算目标尺寸 (Y轴和高度始终保持同步)
+        w = 1100 if target_mode == ViewMode.FULLSCREEN else 360
+        h = screen.height() - 100
+        target_geo = QRect(screen.width() - w, 50, w, h)
+        if target_mode == ViewMode.SIDEBAR: self.sidebar_geometry = target_geo
+        
+        # 3. 开始丝滑拉伸动画 (不涉及窗口重绘/Flags改变)
         self.anim = QPropertyAnimation(self, b"geometry")
         self.anim.setDuration(400)
         self.anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self.anim.setEndValue(target_geo)
-        self.anim.finished.connect(lambda m=target_mode: self.finalize_mode(m))
         self.anim.start()
-        self.current_mode = target_mode
 
-    def finalize_mode(self, mode: ViewMode):
-        flags = Qt.WindowType.FramelessWindowHint
+    def update_ui_state(self, mode: ViewMode):
+        """仅更新按钮和网格逻辑，不触碰窗口 Flag"""
         if mode == ViewMode.SIDEBAR:
-            flags |= Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
-            self.toggle_btn.setText("←")  # 展开
+            self.toggle_btn.setText("←")
             self.pin_btn.show()
             self.setMouseTracking(True)
         else:
-            self.toggle_btn.setText("→")  # 收缩
+            self.toggle_btn.setText("→")
             self.pin_btn.hide()
             self.is_pinned = False
             self.pin_btn.setChecked(False)
             self.setMouseTracking(False)
-            
-        self.setWindowFlags(flags)
-        self.show()
         self.rebuild_content()
 
+    def finalize_mode(self, mode: ViewMode):
+        self.update_ui_state(mode)
+        self.show()
+
     def show_fullscreen_mode(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        w, h = 1100, 600
-        self.setGeometry((screen.width() - w)//2, (screen.height() - h)//2, w, h)
-        self.finalize_mode(ViewMode.FULLSCREEN)
+        # 初始显示
+        pass 
 
     def enterEvent(self, event):
         if self.current_mode == ViewMode.SIDEBAR and self.is_collapsed: self.expand_sidebar()
