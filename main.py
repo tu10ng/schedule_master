@@ -35,7 +35,7 @@ class ScheduleView(QMainWindow):
         self.current_mode = ViewMode.SIDEBAR
         self.is_collapsed = False
         self.is_pinned = False
-        self.collapsed_width = 8
+        self.collapsed_width = 4
         self.collapse_timer = QTimer()
         self.collapse_timer.setSingleShot(True)
         self.collapse_timer.timeout.connect(self.collapse_sidebar)
@@ -53,22 +53,26 @@ class ScheduleView(QMainWindow):
         self.init_ui()
         self.load_demo_data()
         
-        # 记录初始高度
-        self.init_height = self.height()
-        
-        # 设置初始几何位置
+        # 记录初始几何位置
         screen = QApplication.primaryScreen().availableGeometry()
-        h = screen.height() - 100
+        self.current_y = (screen.height() - 500) // 2
         
-        # 预先设置好两个模式的几何参数
-        self.fullscreen_geometry = QRect(screen.width() - 1100, 50, 1100, h)
-        self.sidebar_geometry = QRect(screen.width() - 360, 50, 360, h)
+        # 预先隐藏，确保所有初始化完成后再一次性显示
+        self.fullscreen_geometry = QRect(screen.width() - 1100, self.current_y, 1100, 600)
+        self.sidebar_geometry = QRect(screen.width() - 360, self.current_y, 360, 400)
         
-        # 以侧边栏启动
+        # 2. 设置初始位置 (必须在 show 之前)
         self.setGeometry(self.sidebar_geometry)
-        self.update_ui_state(ViewMode.SIDEBAR)
+        
+        # 3. 静默更新 UI 状态和内容 (计算真正的高度)
+        self.update_ui_state(ViewMode.SIDEBAR, animate=False)
+        
+        # 4. 再次强制设置最终几何 (rebuild_content 之后可能更新了 sidebar_geometry)
+        self.setGeometry(self.sidebar_geometry)
+        self.setWindowOpacity(0.85)
+
+        # 5. 最后显示
         self.show()
-        self.rebuild_content()
 
     def init_ui(self):
         self.main_widget = QWidget()
@@ -119,7 +123,7 @@ class ScheduleView(QMainWindow):
             Task("整理工具箱", "", t, scheduled=False, urgent=False), # 明确标记为非紧急
         ]
 
-    def rebuild_content(self):
+    def rebuild_content(self, animate=True):
         """流式更新内容，适配父窗体拉伸"""
         today = date.today()
         days = 1 if self.current_mode == ViewMode.SIDEBAR else 7
@@ -197,17 +201,46 @@ class ScheduleView(QMainWindow):
         if self.container_layout.count() > 0 and not isinstance(self.container_layout.itemAt(self.container_layout.count()-1), QWidget):
              self.container_layout.addStretch()
 
-        # 5. 如果是侧边栏模式，同步窗口几何尺寸
-        if self.current_mode == ViewMode.SIDEBAR:
-            screen = QApplication.primaryScreen().availableGeometry()
-            # 彻底消除多余空白：窗口宽度 = 内容宽度 + 2px(边框预留)
-            target_w = max(200, min(800, total_grid_w + 2))
-            h = screen.height() - 100
-            self.sidebar_geometry = QRect(screen.width() - target_w, 50, target_w, h)
-            
-            # 如果当前不是在动画中且没有折叠，则直接更新尺寸
-            if not self.is_collapsed and (not hasattr(self, "anim") or self.anim.state() == QPropertyAnimation.State.Stopped):
-                self.setGeometry(self.sidebar_geometry)
+        # 5. 同步窗口几何尺寸 (通过动画应用，且始终保持右侧贴边)
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        # 计算理想高度: 标题栏(35) + 表头(40) + 人行(N*CELL_HEIGHT) + Backlog(动态) + 边距
+        backlog_h = self.backlog_view.height() if hasattr(self, 'backlog_view') else 100
+        
+        target_content_h = 35 + 40 + (len(persons) * CELL_HEIGHT) + backlog_h + 20
+        max_h = screen.height() - 100
+        target_h = min(target_content_h, max_h)
+        
+        # 计算侧边栏和全屏模式的目标几何 (记录当前 Y 以保持位置)
+        sidebar_w = max(200, min(800, total_grid_w + 2))
+        self.sidebar_geometry = QRect(screen.width() - sidebar_w, self.current_y, sidebar_w, target_h)
+        
+        fullscreen_w = max(400, min(screen.width() - 50, total_grid_w + 2))
+        self.fullscreen_geometry = QRect(screen.width() - fullscreen_w, self.current_y, fullscreen_w, target_h)
+
+        # 应用几何更新
+        if not self.is_collapsed:
+            target_geo = self.sidebar_geometry if self.current_mode == ViewMode.SIDEBAR else self.fullscreen_geometry
+            if animate:
+                self.apply_geometry_animation(target_geo)
+            else:
+                self.setGeometry(target_geo)
+
+    def apply_geometry_animation(self, target_geo: QRect):
+        """统一的宽度/位置平滑过渡动画"""
+        if self.geometry() == target_geo: return
+        
+        # 如果已经有动画在运行且目标一致，则跳过
+        if hasattr(self, "geo_anim") and self.geo_anim.state() == QPropertyAnimation.State.Running:
+            if self.geo_anim.endValue() == target_geo:
+                return
+            self.geo_anim.stop()
+
+        self.geo_anim = QPropertyAnimation(self, b"geometry")
+        self.geo_anim.setDuration(400)
+        self.geo_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.geo_anim.setEndValue(target_geo)
+        self.geo_anim.start()
 
     def clear_layout(self):
         while self.container_layout.count():
@@ -231,38 +264,74 @@ class ScheduleView(QMainWindow):
                 self.collapse_timer.start(250)
 
     def animate_transition(self, target_mode: ViewMode):
-        screen = QApplication.primaryScreen().availableGeometry()
         if self.is_collapsed: self.expand_sidebar()
         
-        # 1. 唯一一次更新 UI 结构
+        # 1. 启动透明度动画
+        target_opacity = 1.0 if target_mode == ViewMode.FULLSCREEN else 0.85
+        self.opa_anim = QPropertyAnimation(self, b"windowOpacity")
+        self.opa_anim.setDuration(400)
+        self.opa_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.opa_anim.setEndValue(target_opacity)
+        self.opa_anim.start()
+
+        # 2. 更新模式和UI状态 (这会触发 rebuild_content -> apply_geometry_animation)
         self.current_mode = target_mode
         self.update_ui_state(target_mode)
-        
-        # 2. 计算目标尺寸
-        if target_mode == ViewMode.FULLSCREEN:
-            w = 1100
-        else:
-            w = self.sidebar_geometry.width()
-            if w < 100: w = 360
-            
-        h = screen.height() - 100
-        target_geo = QRect(screen.width() - w, 50, w, h)
-        if target_mode == ViewMode.SIDEBAR: self.sidebar_geometry = target_geo
-        
-        self.anim = QPropertyAnimation(self, b"geometry")
-        self.anim.setDuration(400)
-        self.anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self.anim.setEndValue(target_geo)
-        self.anim.start()
 
-    def update_ui_state(self, mode: ViewMode):
-        """更新按钮和可见性"""
+    def moveEvent(self, event):
+        """移动窗口时记录 Y 坐标，用于跟随模式切换"""
+        super().moveEvent(event)
+        # 如果不是在执行动画，且没有折叠，记录 Y
+        if not self.is_collapsed:
+            is_geo_anim = hasattr(self, "geo_anim") and self.geo_anim.state() == QPropertyAnimation.State.Running
+            is_exp_anim = hasattr(self, "exp_anim") and self.exp_anim.state() == QPropertyAnimation.State.Running
+            if not is_geo_anim and not is_exp_anim:
+                self.current_y = self.y()
+                # 同时更新几何缓存，防止 rebuild 被旧值覆写
+                if hasattr(self, "sidebar_geometry"):
+                    self.sidebar_geometry.moveTop(self.current_y)
+                if hasattr(self, "fullscreen_geometry"):
+                    self.fullscreen_geometry.moveTop(self.current_y)
+
+    def update_ui_state(self, mode: ViewMode, animate=True):
+        """更新状态 (任务栏可见性、置顶、按钮、可见性)"""
+        # 1. 透明度动画
+        target_opacity = 1.0 if mode == ViewMode.FULLSCREEN else 0.85
+        if animate:
+            self.opa_anim = QPropertyAnimation(self, b"windowOpacity")
+            self.opa_anim.setDuration(400)
+            self.opa_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            self.opa_anim.setEndValue(target_opacity)
+            self.opa_anim.start()
+        else:
+            self.setWindowOpacity(target_opacity)
+
+        # 2. 窗口 Flag 切换 (控制任务栏图标 / 置顶)
+        # 侧边栏: Frameless + Tool (无任务栏图标) + StaysOnTop
+        # 全屏: Frameless (有任务栏图标，可 Alt+Tab)
         if mode == ViewMode.SIDEBAR:
-            self.custom_title_bar.title_label.hide()
+            # 针对 Linux 环境，增加一些 hint 尝试更强力地隐藏任务栏图标
+            target_flags = (
+                Qt.WindowType.FramelessWindowHint | 
+                Qt.WindowType.WindowStaysOnTopHint | 
+                Qt.WindowType.Tool
+            )
+        else:
+            target_flags = Qt.WindowType.FramelessWindowHint
+            
+        if self.windowFlags() != target_flags:
+            # 记录当前几何，因为修改 Flag 导致窗口重建，位置会重置
+            old_geo = self.geometry()
+            self.setWindowFlags(target_flags)
+            self.setGeometry(old_geo) 
+            self.show() # 重置 Flag 后必须重新显示
+
+        if mode == ViewMode.SIDEBAR:
+            self.custom_title_bar.show()
+            self.custom_title_bar.title_label.show()
             self.pin_btn.show()
             self.toggle_btn.setText("←")
             self.setMouseTracking(True)
-            self.setWindowOpacity(0.85)
         else:
             self.custom_title_bar.show()
             self.custom_title_bar.title_label.show()
@@ -271,8 +340,8 @@ class ScheduleView(QMainWindow):
             self.is_pinned = False
             self.pin_btn.setChecked(False)
             self.setMouseTracking(False)
-            self.setWindowOpacity(1.0)
-        self.rebuild_content()
+        
+        self.rebuild_content(animate=animate)
 
     def enterEvent(self, event):
         if self.current_mode == ViewMode.SIDEBAR and self.is_collapsed: self.expand_sidebar()

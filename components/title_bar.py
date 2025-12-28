@@ -16,6 +16,8 @@ class CustomTitleBar(QWidget):
         self.title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-family: 'Consolas';")
         self.layout.addWidget(self.title_label)
         self.layout.addStretch()
+        
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         # 钉住按钮 (仅在需要时外部控制显示)
         self.pin_btn = QPushButton("📌")
@@ -26,6 +28,7 @@ class CustomTitleBar(QWidget):
             QPushButton:hover { background: #3A4049; }
             QPushButton:checked { background: #4A90E2; color: #FFFFFF; border-radius: 4px; }
         """)
+        self.pin_btn.setCursor(Qt.CursorShape.ArrowCursor)
         self.layout.addWidget(self.pin_btn)
         
         self.toggle_btn = QPushButton("→")
@@ -34,23 +37,29 @@ class CustomTitleBar(QWidget):
             QPushButton { background: #3A4049; color: white; border: none; border-radius: 40px; font-weight: bold; font-size: 16px; }
             QPushButton:hover { background: #4A5059; }
         """)
+        self.toggle_btn.setCursor(Qt.CursorShape.ArrowCursor)
         self.layout.addWidget(self.toggle_btn)
         
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(30, 30)
         self.close_btn.setStyleSheet("QPushButton { background: transparent; color: white; border: none; } QPushButton:hover { background: #e81123; }")
+        self.close_btn.setCursor(Qt.CursorShape.ArrowCursor)
         self.layout.addWidget(self.close_btn)
 
     def mousePressEvent(self, event):
-        if self.window().current_mode == ViewMode.SIDEBAR:
-            return  # 侧边栏模式禁止通过标题栏移动窗口
-            
         if event.button() == Qt.MouseButton.LeftButton:
             self.window().drag_pos = event.globalPosition().toPoint() - self.window().pos()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self.window().current_mode == ViewMode.FULLSCREEN:
-            if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self.window(), 'drag_pos'):
-                self.window().move(event.globalPosition().toPoint() - self.window().drag_pos)
-                event.accept()
+        if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self.window(), 'drag_pos'):
+            target_pos = event.globalPosition().toPoint() - self.window().drag_pos
+            
+            if self.window().current_mode == ViewMode.SIDEBAR:
+                # 侧边栏模式：限制 X 轴，仅允许 Y 轴移动
+                current_x = self.window().x()
+                self.window().move(current_x, target_pos.y())
+            else:
+                # 全屏模式：自由移动
+                self.window().move(target_pos)
+            event.accept()

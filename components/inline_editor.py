@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QLineEdit
+from PyQt6.QtCore import Qt
 
 class InlineEditor(QLineEdit):
     def __init__(self, parent, rect, callback):
@@ -19,6 +20,12 @@ class InlineEditor(QLineEdit):
         self.setFocus()
         self.returnPressed.connect(self.finalize)
         
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.finalized = True
+            self.deleteLater()
+        else:
+            super().keyPressEvent(event)
     def finalize(self):
         if self.finalized: return
         self.finalized = True

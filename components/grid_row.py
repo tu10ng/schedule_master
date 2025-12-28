@@ -168,8 +168,12 @@ class GridPersonRow(QWidget):
             if hasattr(main_window, "add_task"):
                 main_window.add_task(new_task)
 
+        if hasattr(self, "editor") and self.editor:
+            self.editor.finalize()
+            
         self.editor = InlineEditor(self, rect_editor, create_task)
         self.editor.show()
+        self.editor.setFocus()
         
         super().mousePressEvent(event)
 
