@@ -210,14 +210,19 @@ class GridPersonRow(QWidget):
             y = spacing + idx * (block_h + 2)
             task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
             
-            # 1. 背景 (默认为白色)
+            # 1. 背景
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.fillRect(task_rect, QColor(task.color))
+            bg_color = QColor(task.color) if task.urgent else QColor("#323844")
+            painter.fillRect(task_rect, bg_color)
             
             # 2. 绘制右侧状态开关 (待办 | 阻塞 | 完成) - 使用小字体
             sw_w = 80
             sw_rect = QRect(task_rect.right() - sw_w, y, sw_w, block_h)
-            painter.setFont(QFont("Microsoft YaHei", 7, QFont.Weight.Bold))
+            
+            # 非紧急任务移除 Bold
+            sw_font = QFont("Microsoft YaHei", 7)
+            if task.urgent: sw_font.setWeight(QFont.Weight.Bold)
+            painter.setFont(sw_font)
             
             segments = [
                 (TaskStatus.TODO, "待办", "#5B859E"),
@@ -235,7 +240,7 @@ class GridPersonRow(QWidget):
                 else:
                     # 未激活：深灰色背景 + 灰度文字
                     painter.fillRect(seg_rect, QColor("#3A4049"))
-                    painter.setPen(QColor("#888888"))
+                    painter.setPen(QColor("#888888") if task.urgent else QColor("#666666"))
                 
                 painter.drawText(seg_rect, Qt.AlignmentFlag.AlignCenter, label)
                 # 分隔线
@@ -248,8 +253,13 @@ class GridPersonRow(QWidget):
             painter.drawRect(task_rect)
             
             # 4. 任务标题文字
-            painter.setPen(QColor("#FFFFFF")) # 恢复白色文字 (背景变深了)
-            painter.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold)) # 正确字体：16px 约等于 12pt
+            text_color = QColor("#FFFFFF") if task.urgent else QColor("#999999")
+            painter.setPen(text_color)
+            
+            title_font = QFont("Microsoft YaHei", 12)
+            if task.urgent: title_font.setWeight(QFont.Weight.Bold)
+            painter.setFont(title_font)
+            
             text_rect = task_rect.adjusted(12, 0, -sw_w - 5, 0)
             metrics = painter.fontMetrics()
             elided_text = metrics.elidedText(task.title, Qt.TextElideMode.ElideRight, text_rect.width())

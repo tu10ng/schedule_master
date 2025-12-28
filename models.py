@@ -21,6 +21,8 @@ class Task:
     duration: int = 2
     color: str = "#2E3440"
     status: TaskStatus = TaskStatus.TODO
+    scheduled: bool = True
+    urgent: bool = True # 是否为紧急任务，影响渲染风格
     id: str = ""
 
     def __post_init__(self):

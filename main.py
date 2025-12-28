@@ -18,6 +18,7 @@ from constants import CELL_WIDTH_FULL, CELL_WIDTH_SIDE, CELL_HEIGHT, NAME_COL_WI
 from components.title_bar import CustomTitleBar
 from components.grid_row import GridPersonRow
 from components.header import ModeHeader
+from components.backlog_view import BacklogView
 
 class ScheduleView(QMainWindow):
     def __init__(self):
@@ -101,7 +102,11 @@ class ScheduleView(QMainWindow):
         self.container_layout.setContentsMargins(0, 0, 0, 0)
         self.container_layout.setSpacing(1)
         self.scroll.setWidget(self.container)
-        self.main_layout.addWidget(self.scroll)
+        
+        # 垂直分割：上方是网格，下方是不紧急任务
+        self.backlog_view = BacklogView([])
+        self.main_layout.addWidget(self.scroll, stretch=1)
+        self.main_layout.addWidget(self.backlog_view)
 
     def load_demo_data(self):
         self.all_persons = ["张三", "李四", "王五", "周七"] # 固定人员列表
@@ -111,6 +116,7 @@ class ScheduleView(QMainWindow):
             Task("供氧维护", "张三", t, 10, 2),
             Task("哈奇喂养", "李四", t, 8, 1),
             Task("实验室分析", "张三", t + timedelta(days=1), 14, 2),
+            Task("整理工具箱", "", t, scheduled=False, urgent=False), # 明确标记为非紧急
         ]
 
     def rebuild_content(self):
@@ -118,22 +124,30 @@ class ScheduleView(QMainWindow):
         today = date.today()
         days = 1 if self.current_mode == ViewMode.SIDEBAR else 7
         
-        # 0. 计算动态列宽
+        # 筛选已排期和未排期任务
+        scheduled_tasks = [t for t in self.all_tasks if t.scheduled]
+        backlog_tasks = [t for t in self.all_tasks if not t.scheduled]
+        
+        # 0. 计算动态列宽 (必须在更新 BacklogView 前计算，因为 BacklogView 需要对齐)
         self.col_widths = []
         metrics = QFontMetrics(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
         for i in range(days):
             target_date = today + timedelta(days=i)
+            # 关键修复：计算列宽时应考虑当天所有任务（含不紧急任务）
             tasks_on_day = [t for t in self.all_tasks if t.date == target_date]
             if not tasks_on_day:
-                w = 80 # 不论是在全屏还是侧边栏，没有任务时都保持紧凑
+                w = 80 
             else:
                 max_txt_w = 0
                 for t in tasks_on_day:
                     max_txt_w = max(max_txt_w, metrics.horizontalAdvance(t.title))
-                w = max_txt_w + 80 + 30 # 标题 + 状态开关(80) + 边距
+                w = max_txt_w + 80 + 30 
                 min_w = 120 if self.current_mode == ViewMode.FULLSCREEN else 180
                 w = max(min_w, w)
             self.col_widths.append(w)
+
+        # 1. 更新 BacklogView
+        self.backlog_view.update_params(today, days, self.col_widths, backlog_tasks)
         
         # 1. 更新表头
         total_grid_w = sum(self.col_widths) + NAME_COL_WIDTH
@@ -160,7 +174,7 @@ class ScheduleView(QMainWindow):
             if isinstance(w, GridPersonRow): existing_rows.append(w)
         
         for i, p in enumerate(persons):
-            p_tasks = [t for t in self.all_tasks if t.person == p]
+            p_tasks = [t for t in scheduled_tasks if t.person == p]
             if i < len(existing_rows):
                 row = existing_rows[i]
                 row.person_name = p
@@ -319,6 +333,25 @@ class ScheduleView(QMainWindow):
         super().mouseReleaseEvent(event)
 
     def update_drag_preview(self, global_point):
+        rel_pos = self.main_widget.mapFromGlobal(self.mapToGlobal(global_point))
+        if self.backlog_view.geometry().contains(rel_pos):
+            # 识别 backlog 中的具体日期列
+            backlog_local_x = rel_pos.x() - self.backlog_view.x() - NAME_COL_WIDTH
+            if backlog_local_x >= 0:
+                col = -1
+                for i, (off, w) in enumerate(zip(self.backlog_view.col_offsets, self.backlog_view.col_widths)):
+                    if off <= backlog_local_x < off + w:
+                        col = i
+                        break
+                if col != -1:
+                    target_date = self.backlog_view.start_date + timedelta(days=col)
+                    self.drag_target_info = ("BACKLOG", target_date)
+                else:
+                    self.drag_target_info = "BACKLOG" # 降级处理
+            else:
+                self.drag_target_info = "BACKLOG"
+            return
+
         local_pos = self.scroll.widget().mapFromGlobal(self.mapToGlobal(global_point))
         target_row = None
         for i in range(1, self.container_layout.count()):
@@ -348,11 +381,21 @@ class ScheduleView(QMainWindow):
             self.drag_target_info = None
 
     def finalize_task_drag(self):
-        if self.drag_target_info:
+        if isinstance(self.drag_target_info, tuple) and self.drag_target_info[0] == "BACKLOG":
+            self.dragging_task.scheduled = False
+            self.dragging_task.person = ""
+            self.dragging_task.date = self.drag_target_info[1]
+            self.rebuild_content()
+        elif self.drag_target_info == "BACKLOG":
+            self.dragging_task.scheduled = False
+            self.dragging_task.person = ""
+            self.rebuild_content()
+        elif self.drag_target_info:
             target_p, target_d = self.drag_target_info
             
             self.dragging_task.person = target_p
             self.dragging_task.date = target_d
+            self.dragging_task.scheduled = True
             self.dragging_task.status = TaskStatus.TODO
             
             # 清除划线进度
