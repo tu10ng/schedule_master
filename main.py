@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-Schedule Master - Oxygen Not Included Style
-多轨平铺任务管理工具 - 双模式视图
+Schedule Master - Excel Grid System with Dual-Mode View
+基于单元格索引的坐标系统 + 双视图模式
 """
 import sys
 import os
 from dataclasses import dataclass
 from typing import List
 from enum import Enum
-from datetime import datetime, date
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
-    QHBoxLayout, QLabel, QScrollArea, QPushButton
+    QHBoxLayout, QLabel, QPushButton, QScrollArea
 )
-from PyQt6.QtCore import Qt, QRectF, QRect, QTimer, QPropertyAnimation, QEasingCurve, QPoint
-from PyQt6.QtGui import (
-    QPainter, QColor, QPen, QBrush, QFont, 
-    QLinearGradient, QCursor
-)
+from PyQt6.QtCore import Qt, QRect, QTimer, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QCursor
+
+
+# 网格常量
+CELL_WIDTH = 60   # 每个单元格宽度(像素)
+CELL_HEIGHT = 50  # 每个单元格高度(像素)
 
 
 class ViewMode(Enum):
@@ -28,219 +29,144 @@ class ViewMode(Enum):
 
 @dataclass
 class Task:
-    """任务数据模型"""
+    """任务数据模型 - 基于单元格索引"""
     title: str
-    start_hour: float  # 0-24
-    end_hour: float    # 0-24
-    color: str
-    date: date = None  # 任务日期
-    track: int = 0     # 自动计算的轨道编号
-
-
-class MultiTrackLayoutEngine:
-    """多轨平铺布局算法"""
+    row_index: int      # 行索引(人员)
+    col_index: int      # 列索引(开始时间)
+    duration: int = 1   # 持续时间(单元格数)
+    color: str = "#5B859E"
     
-    @staticmethod
-    def is_overlap(task1: Task, task2: Task) -> bool:
-        """检测两个任务是否时间重叠"""
-        return task1.start_hour < task2.end_hour and task2.start_hour < task1.end_hour
-    
-    @staticmethod
-    def layout_tasks(tasks: List[Task]) -> int:
-        """
-        分配轨道编号并返回所需最大轨道数
-        算法：贪心策略，每个任务分配到最低可用轨道
-        """
-        if not tasks:
-            return 0
-        
-        sorted_tasks = sorted(tasks, key=lambda t: t.start_hour)
-        track_end_times = []
-        
-        for task in sorted_tasks:
-            assigned = False
-            for track_idx, end_time in enumerate(track_end_times):
-                if task.start_hour >= end_time:
-                    task.track = track_idx
-                    track_end_times[track_idx] = task.end_hour
-                    assigned = True
-                    break
-            
-            if not assigned:
-                task.track = len(track_end_times)
-                track_end_times.append(task.end_hour)
-        
-        return len(track_end_times)
-
-
-class TaskBlock(QWidget):
-    """任务块组件 - 带发光效果"""
-    
-    def __init__(self, task: Task, timeline_width: int, parent=None):
-        super().__init__(parent)
-        self.task = task
-        self.timeline_width = timeline_width
-        self.is_hovered = False
-        self.setMouseTracking(True)
-        self.calculate_geometry()
-        
-    def calculate_geometry(self):
-        """根据任务时间计算几何位置"""
-        hour_width = self.timeline_width / 24.0
-        x = int(self.task.start_hour * hour_width)
-        width = int((self.task.end_hour - self.task.start_hour) * hour_width)
-        height = 35 
-        self.setGeometry(x, 0, width, height)
-    
-    def enterEvent(self, event):
-        self.is_hovered = True
-        self.update()
-        
-    def leaveEvent(self, event):
-        self.is_hovered = False
-        self.update()
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        if self.is_hovered:
-            for i in range(5):
-                alpha = 50 - i * 10
-                glow_color = QColor(self.task.color)
-                glow_color.setAlpha(alpha)
-                pen = QPen(glow_color, 2 + i * 0.5)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                rect = QRectF(i, i, self.width() - 2*i, self.height() - 2*i)
-                painter.drawRoundedRect(rect, 6, 6)
-        
-        main_rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        base_color = QColor(self.task.color)
-        gradient.setColorAt(0, base_color.lighter(110))
-        gradient.setColorAt(1, base_color)
-        
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(QPen(QColor(self.task.color).darker(120), 2))
-        painter.drawRoundedRect(main_rect, 6, 6)
-        
-        painter.setPen(QColor("#FFFFFF"))
-        font = QFont("Consolas", 10, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(main_rect, Qt.AlignmentFlag.AlignCenter, self.task.title)
-
-
-class TimelineCanvas(QWidget):
-    """时间轴画布子类，用于绘制网格"""
-    def __init__(self, timeline_width: int, max_tracks: int, track_height: int, track_spacing: int, parent=None):
-        super().__init__(parent)
-        self.timeline_width = timeline_width
-        self.max_tracks = max_tracks
-        self.track_height = track_height
-        self.track_spacing = track_spacing
-        self.setFixedWidth(timeline_width)
-        total_height = max(max_tracks * track_height + (max_tracks - 1) * track_spacing, 45)
-        self.setFixedHeight(total_height)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#1F2329"))
-        
-        hour_width = self.timeline_width / 24
-        for i in range(25):
-            x = int(i * hour_width)
-            pen = QPen(QColor("#3A4049" if i % 6 == 0 else "#2A3039"), 1)
-            painter.setPen(pen)
-            painter.drawLine(x, 0, x, self.height())
-        
-        for i in range(self.max_tracks + 1):
-            y = i * (self.track_height + self.track_spacing)
-            painter.setPen(QPen(QColor("#2A3039"), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(0, y, self.timeline_width, y)
+    def get_pixel_rect(self, row_offset_y: int = 0) -> QRect:
+        """计算任务的像素矩形(完全填充格子)"""
+        x = self.col_index * CELL_WIDTH
+        y = row_offset_y  # 使用传入的行偏移
+        width = self.duration * CELL_WIDTH
+        height = CELL_HEIGHT
+        return QRect(x, y, width, height)
 
 
 class PersonRow(QWidget):
-    """人员行组件"""
-    def __init__(self, person_name: str, tasks: List[Task], timeline_width: int = 960, parent=None):
+    """人员行 - 包含名字和网格"""
+    
+    def __init__(self, person_name: str, tasks: List[Task], cols: int = 24, parent=None):
         super().__init__(parent)
         self.person_name = person_name
         self.tasks = tasks
-        self.timeline_width = timeline_width
-        self.track_height = 40
-        self.track_spacing = 5
+        self.cols = cols
         
-        self.max_tracks = MultiTrackLayoutEngine.layout_tasks(tasks)
-        self.init_ui()
+        # 设置固定大小
+        canvas_width = cols * CELL_WIDTH + 120  # 加上名字列
+        canvas_height = CELL_HEIGHT
+        self.setFixedSize(canvas_width, canvas_height)
     
-    def init_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        name_label = QLabel(self.person_name)
-        name_label.setFixedWidth(120)
-        name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        name_label.setStyleSheet("""
-            QLabel {
-                background-color: #2A3039;
-                color: #FFFFFF;
-                font-weight: bold;
-                font-size: 14px;
-                padding-right: 15px;
-                border-right: 2px solid #3A4049;
-            }
-        """)
-        layout.addWidget(name_label)
-        
-        self.timeline_canvas = TimelineCanvas(
-            self.timeline_width, self.max_tracks, 
-            self.track_height, self.track_spacing, self
-        )
-        layout.addWidget(self.timeline_canvas)
-        layout.addStretch()
-        
-        for task in self.tasks:
-            block = TaskBlock(task, self.timeline_width, self.timeline_canvas)
-            y_pos = task.track * (self.track_height + self.track_spacing) + 5
-            block.move(block.x(), y_pos)
-
-
-class TimelineHeader(QWidget):
-    """时间轴表头子类"""
-    def __init__(self, timeline_width: int, parent=None):
-        super().__init__(parent)
-        self.timeline_width = timeline_width
-        self.setFixedWidth(timeline_width)
-        self.setFixedHeight(40)
-
     def paintEvent(self, event):
+        """绘制人员行"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        hour_width = self.timeline_width / 24
+        # 1. 绘制背景
+        painter.fillRect(self.rect(), QColor("#1F2329"))
+        
+        # 2. 绘制名字列
+        name_rect = QRect(0, 0, 120, CELL_HEIGHT)
+        painter.fillRect(name_rect, QColor("#2A3039"))
+        painter.setPen(QColor("#FFFFFF"))
+        font = QFont("Microsoft YaHei", 11, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(name_rect.adjusted(0, 0, -15, 0),
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        self.person_name)
+        
+        # 分割线
+        painter.setPen(QPen(QColor("#3A4049"), 2))
+        painter.drawLine(120, 0, 120, CELL_HEIGHT)
+        
+        # 3. 绘制网格线
+        painter.translate(120, 0)
+        self.draw_grid(painter)
+        
+        # 4. 绘制任务块
+        self.draw_tasks(painter)
+    
+    def draw_grid(self, painter: QPainter):
+        """绘制Excel式分割线"""
+        grid_pen = QPen(QColor("#3A4049"), 1)
+        painter.setPen(grid_pen)
+        
+        # 垂直线
+        for col in range(self.cols + 1):
+            x = col * CELL_WIDTH
+            painter.drawLine(x, 0, x, CELL_HEIGHT)
+        
+        # 水平线
+        painter.drawLine(0, 0, self.cols * CELL_WIDTH, 0)
+        painter.drawLine(0, CELL_HEIGHT, self.cols * CELL_WIDTH, CELL_HEIGHT)
+        
+        # 加粗主要网格线(每6列)
+        major_pen = QPen(QColor("#4A5059"), 2)
+        painter.setPen(major_pen)
+        for col in range(0, self.cols + 1, 6):
+            x = col * CELL_WIDTH
+            painter.drawLine(x, 0, x, CELL_HEIGHT)
+    
+    def draw_tasks(self, painter: QPainter):
+        """绘制任务块"""
+        for task in self.tasks:
+            rect = task.get_pixel_rect(0)
+            task_rect = rect.adjusted(1, 1, -1, -1)
+            
+            # 填充
+            painter.fillRect(task_rect, QColor(task.color))
+            
+            # 边框
+            border_pen = QPen(QColor(task.color).darker(130), 2)
+            painter.setPen(border_pen)
+            painter.drawRect(task_rect)
+            
+            # 文字
+            painter.setPen(QColor("#FFFFFF"))
+            font = QFont("Consolas", 9, QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.drawText(task_rect, Qt.AlignmentFlag.AlignCenter, task.title)
+
+
+class TimelineHeader(QWidget):
+    """时间轴表头"""
+    
+    def __init__(self, cols: int = 24, parent=None):
+        super().__init__(parent)
+        self.cols = cols
+        self.setFixedHeight(40)
+        self.setFixedWidth(cols * CELL_WIDTH + 120)
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#2A3039"))
+        
+        # 名字列占位
+        painter.fillRect(0, 0, 120, 40, QColor("#2A3039"))
+        
+        # 时间标签
+        painter.translate(120, 0)
         painter.setFont(QFont("Consolas", 9))
         painter.setPen(QColor("#AAAAAA"))
         
-        for i in range(24):
-            x = int(i * hour_width)
-            painter.drawText(QRectF(x, 0, hour_width, 40), Qt.AlignmentFlag.AlignCenter, f"{i:02d}:00")
-            if i > 0:
-                painter.setPen(QColor("#3A4049"))
-                painter.drawLine(x, 30, x, 40)
-                painter.setPen(QColor("#AAAAAA"))
+        for i in range(self.cols):
+            x = i * CELL_WIDTH
+            painter.drawText(QRect(x, 0, CELL_WIDTH, 40),
+                           Qt.AlignmentFlag.AlignCenter, f"{i:02d}:00")
 
 
 class ScheduleView(QMainWindow):
     """主视图 - 支持双模式"""
+    
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Schedule Master - ONI Style")
+        self.setWindowTitle("Schedule Master - Grid + Dual Mode")
         
         # 视图模式
         self.current_mode = ViewMode.FULLSCREEN
-        self.is_collapsed = False  # 侧边栏折叠状态
+        self.is_collapsed = False
         self.collapsed_width = 5
         
         # 定时器
@@ -253,11 +179,11 @@ class ScheduleView(QMainWindow):
         self.fullscreen_geometry = QRect()
         
         # 数据
-        self.all_tasks = []
+        self.all_data = []
         
         self.init_ui()
         self.load_demo_data()
-        self.show_fullscreen_mode()  # 默认全屏模式
+        self.show_fullscreen_mode()
     
     def init_ui(self):
         """初始化UI"""
@@ -274,17 +200,16 @@ class ScheduleView(QMainWindow):
     
     def create_title_bar(self):
         """创建标题栏"""
-        self.title_bar = QWidget()
-        self.title_bar.setFixedHeight(35)
-        self.title_bar.setStyleSheet("background-color: #2A3039;")
+        title_bar = QWidget()
+        title_bar.setFixedHeight(35)
+        title_bar.setStyleSheet("background-color: #2A3039;")
         
-        layout = QHBoxLayout(self.title_bar)
+        layout = QHBoxLayout(title_bar)
         layout.setContentsMargins(10, 0, 5, 0)
-        layout.setSpacing(10)
         
-        title_label = QLabel("📋 Schedule Master")
-        title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 13px;")
-        layout.addWidget(title_label)
+        title = QLabel("📋 Schedule Master - Grid System")
+        title.setStyleSheet("color: white; font-weight: bold;")
+        layout.addWidget(title)
         layout.addStretch()
         
         # 切换按钮
@@ -299,11 +224,8 @@ class ScheduleView(QMainWindow):
                 border: none;
                 border-radius: 4px;
                 font-size: 14px;
-                font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: rgba(91, 163, 245, 0.8);
-            }
+            QPushButton:hover { background-color: rgba(91, 163, 245, 0.8); }
         """)
         layout.addWidget(self.toggle_btn)
         
@@ -312,89 +234,61 @@ class ScheduleView(QMainWindow):
         close_btn.setFixedSize(30, 30)
         close_btn.clicked.connect(QApplication.quit)
         close_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: white;
-                border: none;
-                font-size: 14px;
-            }
+            QPushButton { background: transparent; color: white; border: none; }
             QPushButton:hover { background: #e81123; }
         """)
         layout.addWidget(close_btn)
         
-        self.main_layout.addWidget(self.title_bar)
+        self.main_layout.addWidget(title_bar)
     
     def create_content_area(self):
         """创建内容区域"""
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("QScrollArea { background-color: #1F2329; border: none; }")
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea { background: #1F2329; border: none; }")
         
         self.container = QWidget()
         self.container_layout = QVBoxLayout(self.container)
         self.container_layout.setContentsMargins(0, 0, 0, 0)
         self.container_layout.setSpacing(2)
         
-        self.scroll_area.setWidget(self.container)
-        self.main_layout.addWidget(self.scroll_area)
+        self.scroll.setWidget(self.container)
+        self.main_layout.addWidget(self.scroll)
     
     def load_demo_data(self):
         """加载演示数据"""
-        today = date.today()
-        
-        self.all_tasks = [
+        self.all_data = [
             ("张三", [
-                Task("睡觉 💤", 0, 8, "#5B859E", today),
-                Task("工作 💼", 6, 14, "#E3A857", today),
-                Task("运动 🏃", 12, 16, "#7FAE8A", today),
+                Task("睡觉💤", row_index=0, col_index=0, duration=8, color="#5B859E"),
+                Task("工作💼", row_index=0, col_index=9, duration=5, color="#E3A857"),
             ]),
             ("李四", [
-                Task("会议 📊", 9, 11, "#D98E7A", today),
-                Task("学习 📚", 10, 12, "#9B7FAE", today),
-                Task("休息 ☕", 14, 15, "#6B9BAE", today),
+                Task("会议📊", row_index=0, col_index=9, duration=2, color="#D98E7A"),
+                Task("学习📚", row_index=0, col_index=14, duration=3, color="#9B7FAE"),
             ])
         ]
     
-    def rebuild_content(self, tasks_data):
+    def rebuild_content(self):
         """重建内容"""
-        # 清空现有内容
         while self.container_layout.count():
             item = self.container_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # 添加header
+        # 列数根据模式调整
+        cols = 24 if self.current_mode == ViewMode.FULLSCREEN else 12
+        
+        # 添加表头
         if self.current_mode == ViewMode.FULLSCREEN:
-            header = self.create_fullscreen_header()
+            header = TimelineHeader(cols)
             self.container_layout.addWidget(header)
         
         # 添加人员行
-        timeline_width = 960 if self.current_mode == ViewMode.FULLSCREEN else 280
-        for person_name, tasks in tasks_data:
-            row = PersonRow(person_name, tasks, timeline_width)
+        for person_name, tasks in self.all_data:
+            row = PersonRow(person_name, tasks, cols)
             self.container_layout.addWidget(row)
         
         self.container_layout.addStretch()
-    
-    def create_fullscreen_header(self):
-        """创建全屏模式表头"""
-        header = QWidget()
-        header.setFixedHeight(40)
-        header.setStyleSheet("background-color: #2A3039;")
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        spacer = QWidget()
-        spacer.setFixedWidth(120)
-        spacer.setStyleSheet("border-right: 2px solid #3A4049;")
-        layout.addWidget(spacer)
-        
-        timeline_header = TimelineHeader(960)
-        layout.addWidget(timeline_header)
-        layout.addStretch()
-        
-        return header
     
     def toggle_view_mode(self):
         """切换视图模式"""
@@ -404,114 +298,80 @@ class ScheduleView(QMainWindow):
             self.animate_to_fullscreen()
     
     def animate_to_sidebar(self):
-        """动画切换到侧边栏模式"""
+        """切换到侧边栏"""
         screen = QApplication.primaryScreen().availableGeometry()
         
-        # 保存当前几何
         self.fullscreen_geometry = self.geometry()
-        
-        # 目标几何（右侧边缘）
-        target_width = 350
+        target_width = 400
         target_height = screen.height() - 100
-        target_x = screen.width() - target_width
-        target_y = 50
+        self.sidebar_geometry = QRect(screen.width() - target_width, 50, 
+                                     target_width, target_height)
         
-        self.sidebar_geometry = QRect(target_x, target_y, target_width, target_height)
-        
-        # 动画
         self.animation = QPropertyAnimation(self, b"geometry")
         self.animation.setDuration(400)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self.animation.setStartValue(self.geometry())
         self.animation.setEndValue(self.sidebar_geometry)
-        self.animation.finished.connect(lambda: self.finalize_sidebar_mode())
+        self.animation.finished.connect(self.finalize_sidebar_mode)
         self.animation.start()
         
         self.current_mode = ViewMode.SIDEBAR
     
     def finalize_sidebar_mode(self):
-        """完成侧边栏模式切换"""
-        # 更新窗口标志
+        """完成侧边栏切换"""
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool
         )
         self.show()
-        
-        # 重建内容（只显示今日任务）
-        today_tasks = [(name, tasks) for name, tasks in self.all_tasks]
-        self.rebuild_content(today_tasks)
-        
-        # 更新按钮
+        self.rebuild_content()
         self.toggle_btn.setText("▬")
-        self.toggle_btn.setToolTip("切换全屏模式")
-        
-        # 启用鼠标追踪
         self.setMouseTracking(True)
     
     def animate_to_fullscreen(self):
-        """动画切换到全屏模式"""
+        """切换到全屏"""
         if self.is_collapsed:
             self.expand_sidebar()
         
         screen = QApplication.primaryScreen().availableGeometry()
-        
-        # 目标几何（居中）
-        target_width = 1200
+        target_width = 1600
         target_height = 700
-        target_x = (screen.width() - target_width) // 2
-        target_y = (screen.height() - target_height) // 2
+        self.fullscreen_geometry = QRect((screen.width() - target_width) // 2,
+                                        (screen.height() - target_height) // 2,
+                                        target_width, target_height)
         
-        self.fullscreen_geometry = QRect(target_x, target_y, target_width, target_height)
-        
-        # 动画
         self.animation = QPropertyAnimation(self, b"geometry")
         self.animation.setDuration(400)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self.animation.setStartValue(self.geometry())
         self.animation.setEndValue(self.fullscreen_geometry)
-        self.animation.finished.connect(lambda: self.finalize_fullscreen_mode())
+        self.animation.finished.connect(self.finalize_fullscreen_mode)
         self.animation.start()
         
         self.current_mode = ViewMode.FULLSCREEN
     
     def finalize_fullscreen_mode(self):
-        """完成全屏模式切换"""
-        # 更新窗口标志（移除置顶）
+        """完成全屏切换"""
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.show()
-        
-        # 重建内容
-        self.rebuild_content(self.all_tasks)
-        
-        # 更新按钮
+        self.rebuild_content()
         self.toggle_btn.setText("⛶")
-        self.toggle_btn.setToolTip("切换侧边栏模式")
-        
         self.setMouseTracking(False)
     
-    def show_sidebar_mode(self):
-        """显示侧边栏模式（无动画）"""
-        screen = QApplication.primaryScreen().availableGeometry()
-        target_width = 350
-        target_height = screen.height() - 100
-        self.setGeometry(screen.width() - target_width, 50, target_width, target_height)
-        self.current_mode = ViewMode.SIDEBAR
-        self.finalize_sidebar_mode()
-    
     def show_fullscreen_mode(self):
-        """显示全屏模式（无动画）"""
+        """显示全屏模式(无动画)"""
         screen = QApplication.primaryScreen().availableGeometry()
-        target_width = 1200
+        target_width = 1600
         target_height = 700
-        self.setGeometry((screen.width() - target_width) // 2, 
+        self.setGeometry((screen.width() - target_width) // 2,
                         (screen.height() - target_height) // 2,
                         target_width, target_height)
         self.current_mode = ViewMode.FULLSCREEN
-        self.finalize_fullscreen_mode()
+        self.rebuild_content()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.show()
     
-    # 侧边栏折叠功能
     def enterEvent(self, event):
         """鼠标进入"""
         if self.current_mode == ViewMode.SIDEBAR and self.is_collapsed:
@@ -535,7 +395,7 @@ class ScheduleView(QMainWindow):
         anim = QPropertyAnimation(self, b"geometry")
         anim.setDuration(200)
         anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        target = QRect(screen.width() - self.collapsed_width, self.y(), 
+        target = QRect(screen.width() - self.collapsed_width, self.y(),
                       self.collapsed_width, self.height())
         anim.setEndValue(target)
         
@@ -559,12 +419,11 @@ class ScheduleView(QMainWindow):
         self.expand_anim = anim
     
     def mousePressEvent(self, event):
-        """鼠标按下 - 拖动窗口"""
+        """拖动窗口"""
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_pos = event.globalPosition().toPoint() - self.pos()
     
     def mouseMoveEvent(self, event):
-        """鼠标移动 - 拖动窗口"""
         if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, 'drag_pos'):
             self.move(event.globalPosition().toPoint() - self.drag_pos)
 
