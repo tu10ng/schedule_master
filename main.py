@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Schedule Master - Step 2 (Refined): Unified Grid Style
-侧边栏(单列网格) vs 全屏(多列网格)
+Schedule Master - Step 3: UI Controls & Pinning
+改进按钮逻辑与侧边栏置顶功能
 """
 import sys
 import os
@@ -18,21 +18,19 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QCursor
 
 
 # 网格常量
-CELL_WIDTH_FULL = 140   # 全屏模式日期单元格宽度
-CELL_WIDTH_SIDE = 240   # 侧边栏模式单元格宽度
-CELL_HEIGHT = 90        # 单元格高度 (增加高度以容纳堆叠任务)
-NAME_COL_WIDTH = 100    # 名字列宽度
+CELL_WIDTH_FULL = 140   
+CELL_WIDTH_SIDE = 240   
+CELL_HEIGHT = 90        
+NAME_COL_WIDTH = 100    
 
 
 class ViewMode(Enum):
-    """视图模式"""
-    SIDEBAR = 1      # 侧边栏模式(单列网格)
-    FULLSCREEN = 2   # 全屏模式(日期网格)
+    SIDEBAR = 1      
+    FULLSCREEN = 2   
 
 
 @dataclass
 class Task:
-    """任务数据模型"""
     title: str
     person: str
     date: date
@@ -42,8 +40,6 @@ class Task:
 
 
 class GridPersonRow(QWidget):
-    """统一网格人员行 - 支持单列或多列"""
-    
     def __init__(self, person_name: str, tasks: List[Task], 
                  start_date: date, days: int, cell_width: int, parent=None):
         super().__init__(parent)
@@ -52,148 +48,93 @@ class GridPersonRow(QWidget):
         self.start_date = start_date
         self.days = days
         self.cell_width = cell_width
-        
-        # 按日期对任务分组
         self.date_map: Dict[date, List[Task]] = {}
         for t in tasks:
-            if t.date not in self.date_map:
-                self.date_map[t.date] = []
+            if t.date not in self.date_map: self.date_map[t.date] = []
             self.date_map[t.date].append(t)
-            
         self.setFixedSize(NAME_COL_WIDTH + days * cell_width, CELL_HEIGHT)
     
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # 背景
         painter.fillRect(self.rect(), QColor("#1F2329"))
-        
-        # 1. 绘制名字单元格
         name_rect = QRect(0, 0, NAME_COL_WIDTH, CELL_HEIGHT)
         painter.fillRect(name_rect, QColor("#2A3039"))
-        
-        # 名字边框
         painter.setPen(QPen(QColor("#3A4049"), 2))
         painter.drawRect(name_rect)
-        
         painter.setPen(QColor("#FFFFFF"))
         painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
-        painter.drawText(name_rect.adjusted(5, 0, -5, 0), 
-                        Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter, 
-                        self.person_name)
+        painter.drawText(name_rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, self.person_name)
         
-        # 2. 绘制网格单元格
         painter.translate(NAME_COL_WIDTH, 0)
-        
         grid_pen = QPen(QColor("#3A4049"), 1)
-        
         for i in range(self.days):
             current_date = self.start_date + timedelta(days=i)
             cell_x = i * self.cell_width
             cell_rect = QRect(cell_x, 0, self.cell_width, CELL_HEIGHT)
-            
-            # 单元格边框 (Excel式)
             painter.setPen(grid_pen)
             painter.drawRect(cell_rect)
-            
-            # 绘制该单元格内的任务
             if current_date in self.date_map:
-                day_tasks = self.date_map[current_date]
-                self.draw_tasks_in_cell(painter, cell_rect, day_tasks)
+                self.draw_tasks_in_cell(painter, cell_rect, self.date_map[current_date])
 
     def draw_tasks_in_cell(self, painter: QPainter, rect: QRect, tasks: List[Task]):
-        """在单元格内垂直排列任务"""
         count = len(tasks)
         if count == 0: return
-        
-        # 计算每个任务块的高度，考虑间距
         spacing = 4
         available_h = rect.height() - (spacing * 2)
         block_h = min(24, (available_h - (count - 1) * 2) // count)
-        
         for idx, task in enumerate(tasks):
             y = spacing + idx * (block_h + 2)
             task_rect = QRect(rect.x() + 4, y, rect.width() - 8, block_h)
-            
-            # 填充矩形 (ONI风格)
             painter.fillRect(task_rect, QColor(task.color))
-            
-            # 极细边框
             painter.setPen(QPen(QColor(task.color).darker(140), 1))
             painter.drawRect(task_rect)
-            
-            # 文字 (Consolas 等宽字)
             painter.setPen(QColor("#FFFFFF"))
             painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
-            
-            # 如果宽度够，显示时间
             display_text = task.title
-            if rect.width() > 180:
-                display_text += f" ({task.start_hour:02d}:00)"
-                
+            if rect.width() > 180: display_text += f" ({task.start_hour:02d}:00)"
             metrics = painter.fontMetrics()
             elided_text = metrics.elidedText(display_text, Qt.TextElideMode.ElideRight, task_rect.width() - 4)
             painter.drawText(task_rect.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_text)
 
 
 class ModeHeader(QWidget):
-    """网格表头"""
     def __init__(self, start_date: date, days: int, cell_width: int, mode: ViewMode, parent=None):
         super().__init__(parent)
-        self.start_date = start_date
-        self.days = days
-        self.cell_width = cell_width
-        self.mode = mode
+        self.start_date, self.days, self.cell_width, self.mode = start_date, days, cell_width, mode
         self.setFixedHeight(40)
         self.setFixedWidth(NAME_COL_WIDTH + days * cell_width)
         
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#2A3039"))
-        
-        # 名字列占位
         painter.setPen(QPen(QColor("#3A4049"), 2))
         painter.drawRect(0, 0, NAME_COL_WIDTH, 40)
-        
         painter.translate(NAME_COL_WIDTH, 0)
-        
         for i in range(self.days):
             current_date = self.start_date + timedelta(days=i)
-            x = i * self.cell_width
-            header_rect = QRect(x, 0, self.cell_width, 40)
-            
+            header_rect = QRect(i * self.cell_width, 0, self.cell_width, 40)
             painter.setPen(QPen(QColor("#3A4049"), 1))
             painter.drawRect(header_rect)
-            
             painter.setPen(QColor("#AAAAAA"))
             painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
-            
-            if self.mode == ViewMode.SIDEBAR:
-                title = "今日任务 (TODAY)"
-            else:
-                title = current_date.strftime("%m/%d ") + ["周一","周二","周三","周四","周五","周六","周日"][current_date.weekday()]
-                
+            title = "今日任务 (TODAY)" if self.mode == ViewMode.SIDEBAR else current_date.strftime("%m/%d ") + ["周一","周二","周三","周四","周五","周六","周日"][current_date.weekday()]
             painter.drawText(header_rect, Qt.AlignmentFlag.AlignCenter, title)
 
 
 class ScheduleView(QMainWindow):
-    """主视图"""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Schedule Master - Unified Grid")
-        
+        self.setWindowTitle("Schedule Master - Contextual Controls")
         self.current_mode = ViewMode.FULLSCREEN
         self.is_collapsed = False
+        self.is_pinned = False  # 侧边栏是否钉住(不自动折叠)
         self.collapsed_width = 8
-        
         self.collapse_timer = QTimer()
         self.collapse_timer.setSingleShot(True)
         self.collapse_timer.timeout.connect(self.collapse_sidebar)
-        
         self.sidebar_geometry = QRect()
         self.fullscreen_geometry = QRect()
-        
         self.all_tasks = []
         self.init_ui()
         self.load_demo_data()
@@ -205,7 +146,6 @@ class ScheduleView(QMainWindow):
         self.main_layout = QVBoxLayout(self.main_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
-        
         self.create_title_bar()
         self.create_content_area()
         self.setStyleSheet("QMainWindow { background-color: #1F2329; border: 1px solid #3A4049; }")
@@ -216,17 +156,32 @@ class ScheduleView(QMainWindow):
         self.title_bar.setStyleSheet("background-color: #2A3039;")
         layout = QHBoxLayout(self.title_bar)
         layout.setContentsMargins(10, 0, 5, 0)
+        layout.setSpacing(5)
         
-        self.title_label = QLabel("📋 ONI Schedule")
+        self.title_label = QLabel("📋 ONI")
         self.title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-family: 'Consolas';")
         layout.addWidget(self.title_label)
         layout.addStretch()
+
+        # 钉住按钮 (仅在侧边栏模式显示逻辑)
+        self.pin_btn = QPushButton("📌")
+        self.pin_btn.setFixedSize(30, 30)
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.clicked.connect(self.toggle_pin)
+        self.pin_btn.setStyleSheet("""
+            QPushButton { background: transparent; color: white; border: none; font-size: 14px; }
+            QPushButton:hover { background: #3A4049; }
+            QPushButton:checked { background: #4A90E2; color: #FFFFFF; border-radius: 4px; }
+        """)
+        self.pin_btn.hide()
+        layout.addWidget(self.pin_btn)
         
-        self.toggle_btn = QPushButton("⛶")
+        # 切换按钮 - 初始全屏转侧边栏 (→)
+        self.toggle_btn = QPushButton("→")
         self.toggle_btn.setFixedSize(30, 30)
         self.toggle_btn.clicked.connect(self.toggle_view_mode)
         self.toggle_btn.setStyleSheet("""
-            QPushButton { background: #3A4049; color: white; border: none; border-radius: 4px; }
+            QPushButton { background: #3A4049; color: white; border: none; border-radius: 40px; font-weight: bold; font-size: 16px; }
             QPushButton:hover { background: #4A5059; }
         """)
         layout.addWidget(self.toggle_btn)
@@ -254,45 +209,38 @@ class ScheduleView(QMainWindow):
         self.all_tasks = [
             Task("周期巡检", "张三", t, 9, 1, "#5B859E"),
             Task("供氧维护", "张三", t, 10, 2, "#E3A857"),
-            Task("实验室分析", "张三", t + timedelta(days=1), 14, 2, "#7FAE8A"),
             Task("哈奇喂养", "李四", t, 8, 1, "#D98E7A"),
-            Task("电力采集", "李四", t, 11, 4, "#9B7FAE"),
-            Task("火箭准备", "李四", t + timedelta(days=2), 10, 5, "#6B9BAE"),
+            Task("实验室分析", "张三", t + timedelta(days=1), 14, 2, "#7FAE8A"),
         ]
 
     def rebuild_content(self):
         while self.container_layout.count():
             w = self.container_layout.takeAt(0).widget()
             if w: w.deleteLater()
-            
         today = date.today()
-        if self.current_mode == ViewMode.SIDEBAR:
-            days, width = 1, CELL_WIDTH_SIDE
-            start_date = today
-        else:
-            days, width = 7, CELL_WIDTH_FULL
-            start_date = today
-            
-        # Header
-        self.container_layout.addWidget(ModeHeader(start_date, days, width, self.current_mode))
-        
-        # Rows
+        days, width = (1, CELL_WIDTH_SIDE) if self.current_mode == ViewMode.SIDEBAR else (7, CELL_WIDTH_FULL)
+        self.container_layout.addWidget(ModeHeader(today, days, width, self.current_mode))
         persons = sorted(list(set(t.person for t in self.all_tasks)))
         for p in persons:
             p_tasks = [t for t in self.all_tasks if t.person == p]
-            self.container_layout.addWidget(GridPersonRow(p, p_tasks, start_date, days, width))
-            
+            self.container_layout.addWidget(GridPersonRow(p, p_tasks, today, days, width))
         self.container_layout.addStretch()
 
     def toggle_view_mode(self):
-        if self.current_mode == ViewMode.FULLSCREEN:
-            self.animate_transition(ViewMode.SIDEBAR)
+        self.animate_transition(ViewMode.SIDEBAR if self.current_mode == ViewMode.FULLSCREEN else ViewMode.FULLSCREEN)
+
+    def toggle_pin(self):
+        self.is_pinned = self.pin_btn.isChecked()
+        if self.is_pinned: 
+            self.collapse_timer.stop()
         else:
-            self.animate_transition(ViewMode.FULLSCREEN)
+            # 如果取消钉住时鼠标已经在外面，立即触发折叠检查
+            if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+                self.collapse_timer.start(250)
 
     def animate_transition(self, target_mode: ViewMode):
         screen = QApplication.primaryScreen().availableGeometry()
-        self.fullscreen_geometry = self.geometry() if self.current_mode == ViewMode.FULLSCREEN else self.fullscreen_geometry
+        if self.current_mode == ViewMode.FULLSCREEN: self.fullscreen_geometry = self.geometry()
         
         if target_mode == ViewMode.SIDEBAR:
             w, h = 360, screen.height() - 100
@@ -315,10 +263,14 @@ class ScheduleView(QMainWindow):
         flags = Qt.WindowType.FramelessWindowHint
         if mode == ViewMode.SIDEBAR:
             flags |= Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
-            self.toggle_btn.setText("▬")
+            self.toggle_btn.setText("←")  # 展开
+            self.pin_btn.show()
             self.setMouseTracking(True)
         else:
-            self.toggle_btn.setText("⛶")
+            self.toggle_btn.setText("→")  # 收缩
+            self.pin_btn.hide()
+            self.is_pinned = False
+            self.pin_btn.setChecked(False)
             self.setMouseTracking(False)
             
         self.setWindowFlags(flags)
@@ -336,32 +288,37 @@ class ScheduleView(QMainWindow):
         self.collapse_timer.stop()
 
     def leaveEvent(self, event):
-        if self.current_mode == ViewMode.SIDEBAR and not self.is_collapsed:
+        if self.current_mode == ViewMode.SIDEBAR and not self.is_collapsed and not self.is_pinned:
             if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
                 self.collapse_timer.start(250)
 
     def collapse_sidebar(self):
-        if self.current_mode != ViewMode.SIDEBAR or self.is_collapsed: return
+        if self.current_mode != ViewMode.SIDEBAR or self.is_collapsed or self.is_pinned: return
         self.is_collapsed = True
         screen = QApplication.primaryScreen().availableGeometry()
-        anim = QPropertyAnimation(self, b"geometry")
-        anim.setDuration(250)
-        anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-        anim.setEndValue(QRect(screen.width() - self.collapsed_width, self.y(), self.collapsed_width, self.height()))
-        QTimer.singleShot(100, lambda: self.main_widget.hide())
-        anim.start()
-        self.trans_anim = anim
+        
+        self.coll_anim = QPropertyAnimation(self, b"geometry")
+        self.coll_anim.setDuration(250)
+        self.coll_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        target_rect = QRect(screen.width() - self.collapsed_width, self.y(), self.collapsed_width, self.height())
+        self.coll_anim.setEndValue(target_rect)
+        
+        # 动画开始后稍晚一点隐藏内容，保持平滑感
+        QTimer.singleShot(150, lambda: self.main_widget.hide() if self.is_collapsed else None)
+        self.coll_anim.start()
 
     def expand_sidebar(self):
         if not self.is_collapsed: return
         self.is_collapsed = False
+        
+        self.exp_anim = QPropertyAnimation(self, b"geometry")
+        self.exp_anim.setDuration(200)
+        self.exp_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self.exp_anim.setEndValue(self.sidebar_geometry)
+        
+        # 展开前显示内容
         self.main_widget.show()
-        anim = QPropertyAnimation(self, b"geometry")
-        anim.setDuration(200)
-        anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-        anim.setEndValue(self.sidebar_geometry)
-        anim.start()
-        self.trans_anim = anim
+        self.exp_anim.start()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
