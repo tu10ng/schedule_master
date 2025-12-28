@@ -1,20 +1,50 @@
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from models import ViewMode
 
 class CustomTitleBar(QWidget):
     """专用标题栏，控制窗口移动和基础 UI"""
+    edit_mode_toggled = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(35)
         self.setStyleSheet("background-color: #2A3039;")
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(10, 0, 5, 0)
-        self.layout.setSpacing(5)
+        self.layout.setSpacing(10) # 稍微增加间距
         
         self.title_label = QLabel("📋 ONI")
         self.title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-family: 'Consolas';")
         self.layout.addWidget(self.title_label)
+        
+        # 人员管理按钮 (集成在标题栏)
+        self.people_btn = QPushButton("👥 人员")
+        self.people_btn.setCheckable(True)
+        self.people_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.people_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #D8DEE9;
+                border: none;
+                border-radius: 4px; /* 标题栏里稍微圆一点好看？或者保持 0 */
+                padding: 4px 8px;
+                text-align: center;
+                font-family: 'Microsoft YaHei';
+                font-size: 12px;
+            }
+            QPushButton:checked {
+                background-color: #3B4252;
+                color: #88C0D0;
+                border-bottom: 2px solid #88C0D0;
+            }
+            QPushButton:hover {
+                background-color: #3B4252; 
+            }
+        """)
+        self.people_btn.toggled.connect(self.on_people_toggled)
+        self.layout.addWidget(self.people_btn)
+
         self.layout.addStretch()
         
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -45,6 +75,13 @@ class CustomTitleBar(QWidget):
         self.close_btn.setStyleSheet("QPushButton { background: transparent; color: white; border: none; } QPushButton:hover { background: #e81123; }")
         self.close_btn.setCursor(Qt.CursorShape.ArrowCursor)
         self.layout.addWidget(self.close_btn)
+
+    def on_people_toggled(self, checked):
+        if checked:
+            self.people_btn.setText("✓ 完成")
+        else:
+            self.people_btn.setText("👥 人员")
+        self.edit_mode_toggled.emit(checked)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

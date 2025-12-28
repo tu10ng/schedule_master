@@ -19,6 +19,8 @@ from components.title_bar import CustomTitleBar
 from components.grid_row import GridPersonRow
 from components.header import ModeHeader
 from components.backlog_view import BacklogView
+from components.add_user_row import AddUserRow
+from storage import DataManager
 
 class ScheduleView(QMainWindow):
     def __init__(self):
@@ -50,8 +52,12 @@ class ScheduleView(QMainWindow):
         self.drag_origin_row = None
         self.drag_target_info = None # (person_name, date)
         
+        self.drag_target_info = None # (person_name, date)
+        
+        self.data_manager = DataManager()
+        self.data_manager.load_data()
+        
         self.init_ui()
-        self.load_demo_data()
         
         # 记录初始几何位置
         screen = QApplication.primaryScreen().availableGeometry()
@@ -82,7 +88,9 @@ class ScheduleView(QMainWindow):
         self.main_layout.setSpacing(0)
         
         # 使用自定义标题栏
+        # 使用自定义标题栏
         self.custom_title_bar = CustomTitleBar(self)
+        self.custom_title_bar.edit_mode_toggled.connect(self.toggle_edit_mode)
         self.main_layout.addWidget(self.custom_title_bar)
         
         # 提取按钮引用以便原本逻辑工作
@@ -110,35 +118,68 @@ class ScheduleView(QMainWindow):
         # 垂直分割：上方是网格，下方是不紧急任务
         self.backlog_view = BacklogView([])
         self.main_layout.addWidget(self.scroll, stretch=1)
+        
+        # 添加用户行 (初始化但不添加到主布局，而是放入 container)
+        self.add_user_row = AddUserRow(days=7, col_widths=[], parent=self)
+        self.add_user_row.hide()
+        self.add_user_row.add_user_requested.connect(self.add_user)
+        
+        self.backlog_view = BacklogView([])
         self.main_layout.addWidget(self.backlog_view)
 
-    def load_demo_data(self):
-        self.all_persons = ["张三", "李四", "王五", "周七"] # 固定人员列表
-        t = date.today()
-        self.all_tasks = [
-            Task("周期巡检", "张三", t, 9, 1),
-            Task("供氧维护", "张三", t, 10, 2),
-            Task("哈奇喂养", "李四", t, 8, 1),
-            Task("实验室分析", "张三", t + timedelta(days=1), 14, 2),
-            Task("整理工具箱", "", t, scheduled=False, urgent=False), # 明确标记为非紧急
-        ]
+    def toggle_edit_mode(self, active: bool):
+        # 重新构建内容以插入或移除 AddUserRow
+        self.rebuild_content(animate=False)
+
+    def add_user(self, name, emp_id):
+        self.data_manager.add_user(name, emp_id)
+        self.rebuild_content()
+
+    def add_task(self, task):
+        self.data_manager.tasks.append(task)
+        self.data_manager.save_data()
+        self.rebuild_content()
+
+    def save_data(self):
+        self.data_manager.save_data()
+
+    def delete_user(self, name):
+        # 暂时通过名字查找 ID (因为 GridRow 现在只存了名字)
+        # TODO: 后续 GridRow 应该存 ID
+        for u in self.data_manager.users:
+            if u.name == name:
+                self.data_manager.soft_delete_user(u.emp_id)
+                self.rebuild_content()
+                # 重新保持编辑模式（重建后会丢失）
+                self.toggle_edit_mode(True) 
+                break
 
     def rebuild_content(self, animate=True):
         """流式更新内容，适配父窗体拉伸"""
         today = date.today()
         days = 1 if self.current_mode == ViewMode.SIDEBAR else 7
         
-        # 筛选已排期和未排期任务
-        scheduled_tasks = [t for t in self.all_tasks if t.scheduled]
-        backlog_tasks = [t for t in self.all_tasks if not t.scheduled]
+        # 从 DataManager 获取数据
+        active_users = [u for u in self.data_manager.users if u.is_active]
+        all_tasks = self.data_manager.tasks
         
+        # 筛选已排期和未排期任务
+        scheduled_tasks = [t for t in all_tasks if t.scheduled]
+        backlog_tasks = [t for t in all_tasks if not t.scheduled]
+        
+        active_user_names = {u.name for u in active_users}
+
         # 0. 计算动态列宽 (必须在更新 BacklogView 前计算，因为 BacklogView 需要对齐)
         self.col_widths = []
         metrics = QFontMetrics(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
         for i in range(days):
             target_date = today + timedelta(days=i)
             # 关键修复：计算列宽时应考虑当天所有任务（含不紧急任务）
-            tasks_on_day = [t for t in self.all_tasks if t.date == target_date]
+            # 但排除已删除用户的任务
+            tasks_on_day = [
+                t for t in all_tasks 
+                if t.date == target_date and (not t.person or t.person in active_user_names)
+            ]
             if not tasks_on_day:
                 w = 80 
             else:
@@ -171,25 +212,35 @@ class ScheduleView(QMainWindow):
         self.container.setFixedWidth(total_grid_w)
 
         # 2. 更新人员行
-        persons = self.all_persons
-        existing_rows = []
-        for i in range(1, self.container_layout.count()):
-            w = self.container_layout.itemAt(i).widget()
-            if isinstance(w, GridPersonRow): existing_rows.append(w)
+        persons = [u for u in self.data_manager.users if u.is_active]
         
-        for i, p in enumerate(persons):
-            p_tasks = [t for t in scheduled_tasks if t.person == p]
-            if i < len(existing_rows):
-                row = existing_rows[i]
-                row.person_name = p
-                row.update_tasks(p_tasks, self.col_widths)
-                row.days = days
-            else:
-                self.container_layout.insertWidget(i + 1, GridPersonRow(p, p_tasks, today, days, self.col_widths))
-        
-        # 3. 清理冗余
-        if len(existing_rows) > len(persons):
-            for i in range(len(persons), len(existing_rows)): existing_rows[i].deleteLater()
+        # 简单暴力的全量重建策略 (为了正确反映添加/删除)
+        # 清理旧 ROW (除了第一个 header) - 从后往前删比较安全
+        while self.container_layout.count() > 1:
+            item = self.container_layout.takeAt(1)
+            widget = item.widget()
+            if widget:
+                if widget == self.add_user_row:
+                    widget.setParent(None) # 只是从布局移除，不销毁
+                else:
+                    widget.deleteLater()
+            elif item.spacerItem():
+                pass # 忽略弹簧
+
+        for p in persons:
+            p_tasks = [t for t in scheduled_tasks if t.person == p.name] # 暂时用名字关联
+            row = GridPersonRow(p.name, p_tasks, today, days, self.col_widths)
+            row.set_edit_mode(self.custom_title_bar.people_btn.isChecked()) # 保持编辑状态
+            self.container_layout.addWidget(row)
+
+        # 3. 如果在编辑模式，在最后添加 AddUserRow
+        if self.custom_title_bar.people_btn.isChecked():
+            all_user_names = [u.name for u in self.data_manager.users]
+            self.add_user_row.update_params(days, self.col_widths, all_user_names)
+            self.add_user_row.show()
+            self.container_layout.addWidget(self.add_user_row)
+        else:
+            self.add_user_row.hide()
 
         # 4. 底部弹簧
         if self.container_layout.count() > 0:
@@ -204,10 +255,12 @@ class ScheduleView(QMainWindow):
         # 5. 同步窗口几何尺寸 (通过动画应用，且始终保持右侧贴边)
         screen = QApplication.primaryScreen().availableGeometry()
         
-        # 计算理想高度: 标题栏(35) + 表头(40) + 人行(N*CELL_HEIGHT) + Backlog(动态) + 边距
+        # 计算理想高度: 标题栏(35) + 表头(40) + 人行(N*CELL_HEIGHT) + AddRow(50?) + Backlog(动态) + 边距
+        toolbar_h = 0
+        add_row_h = CELL_HEIGHT if self.custom_title_bar.people_btn.isChecked() else 0
         backlog_h = self.backlog_view.height() if hasattr(self, 'backlog_view') else 100
         
-        target_content_h = 35 + 40 + (len(persons) * CELL_HEIGHT) + backlog_h + 20
+        target_content_h = 35 + toolbar_h + 40 + (len(persons) * CELL_HEIGHT) + add_row_h + backlog_h + 20
         max_h = screen.height() - 100
         target_h = min(target_content_h, max_h)
         
@@ -246,10 +299,6 @@ class ScheduleView(QMainWindow):
         while self.container_layout.count():
             item = self.container_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
-
-    def add_task(self, task: Task):
-        self.all_tasks.append(task)
-        self.rebuild_content()
 
     def toggle_view_mode(self):
         self.animate_transition(ViewMode.SIDEBAR if self.current_mode == ViewMode.FULLSCREEN else ViewMode.FULLSCREEN)
@@ -329,12 +378,16 @@ class ScheduleView(QMainWindow):
         if mode == ViewMode.SIDEBAR:
             self.custom_title_bar.show()
             self.custom_title_bar.title_label.show()
+            self.custom_title_bar.people_btn.hide() # 侧边栏隐藏人员按钮
             self.pin_btn.show()
             self.toggle_btn.setText("←")
             self.setMouseTracking(True)
+            if self.custom_title_bar.people_btn.isChecked(): # 强制退出编辑模式
+                 self.custom_title_bar.people_btn.setChecked(False)
         else:
             self.custom_title_bar.show()
             self.custom_title_bar.title_label.show()
+            self.custom_title_bar.people_btn.show() # 全屏显示人员按钮
             self.pin_btn.hide()
             self.toggle_btn.setText("→")
             self.is_pinned = False
@@ -476,6 +529,7 @@ class ScheduleView(QMainWindow):
             
             self.rebuild_content()
         
+        self.data_manager.save_data() # 保存拖拽变更
         self.dragging_task = None
         self.drag_target_info = None
         self.update()

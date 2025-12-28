@@ -1,8 +1,8 @@
-from PyQt6.QtWidgets import QLineEdit
+from PyQt6.QtWidgets import QLineEdit, QCompleter
 from PyQt6.QtCore import Qt
 
 class InlineEditor(QLineEdit):
-    def __init__(self, parent, rect, callback):
+    def __init__(self, parent, rect, callback, suggestions=None):
         super().__init__(parent)
         self.callback = callback
         self.finalized = False
@@ -17,6 +17,13 @@ class InlineEditor(QLineEdit):
                 font-size: 11px;
             }
         """)
+        
+        if suggestions:
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            self.setCompleter(completer)
+
         self.setFocus()
         self.returnPressed.connect(self.finalize)
         
@@ -29,8 +36,10 @@ class InlineEditor(QLineEdit):
     def finalize(self):
         if self.finalized: return
         self.finalized = True
-        if self.text().strip():
-            self.callback(self.text().strip())
+        
+        # 即使为空也回调，以便父级清理引用
+        self.callback(self.text().strip())
+            
         self.deleteLater()
 
     def focusOutEvent(self, event):

@@ -26,6 +26,14 @@ class GridPersonRow(QWidget):
         # 初始化音效
         self.click_sound = QSoundEffect()
 
+        # 编辑模式状态
+        self.is_edit_mode = False
+        self._shake_offset = 0
+        self.shake_anim = None
+        
+        # 删除按钮区域缓存
+        self.delete_btn_rect = QRect()
+
     def calculate_offsets(self):
         offsets = [0] * len(self.col_widths)
         curr = 0
@@ -55,6 +63,37 @@ class GridPersonRow(QWidget):
 
     strikes = pyqtProperty(float, _get_strikes, _set_strikes)
 
+    def _get_shake(self): return self._shake_offset
+    def _set_shake(self, val): 
+        self._shake_offset = val
+        self.update()
+    shake_offset = pyqtProperty(float, _get_shake, _set_shake)
+
+    def set_edit_mode(self, active: bool):
+        self.is_edit_mode = active
+        if active:
+            # 开启抖动动画
+            self.shake_anim = QPropertyAnimation(self, b"shake_offset")
+            self.shake_anim.setDuration(200)
+            self.shake_anim.setLoopCount(-1) # 无限循环
+            self.shake_anim.setStartValue(-2.0)
+            self.shake_anim.setEndValue(2.0)
+            self.shake_anim.setEasingCurve(QEasingCurve.Type.SineCurve) # 模拟抖动
+            
+            # 使用 KeyValueAt 来精确控制摇晃节奏 (Qt 6.0+)
+            # 简单起见，使用 SineCurve + 往复运动
+            self.shake_anim.setKeyValueAt(0, 0)
+            self.shake_anim.setKeyValueAt(0.25, -2)
+            self.shake_anim.setKeyValueAt(0.75, 2)
+            self.shake_anim.setKeyValueAt(1, 0)
+            
+            self.shake_anim.start()
+        else:
+            if self.shake_anim: 
+                self.shake_anim.stop()
+                self._shake_offset = 0
+        self.update()
+
     def update_tasks(self, tasks, col_widths=None):
         """核心修复：更新任务列表时必须重构日期映射"""
         if col_widths is not None:
@@ -74,13 +113,40 @@ class GridPersonRow(QWidget):
         painter.fillRect(self.rect(), QColor("#1F2329"))
         
         # 1. 绘制名字单元格
+        # 1. 绘制名字单元格
         name_rect = QRect(0, 0, NAME_COL_WIDTH, CELL_HEIGHT)
         painter.fillRect(name_rect, QColor("#2A3039"))
         painter.setPen(QPen(QColor("#3A4049"), 2))
         painter.drawRect(name_rect)
+        
+        # 名字绘制 (带抖动)
+        text_x_offset = self._shake_offset if self.is_edit_mode else 0
+        name_text_rect = name_rect.adjusted(5 + int(text_x_offset), 0, -5 + int(text_x_offset), 0)
+        
         painter.setPen(QColor("#FFFFFF"))
         painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
-        painter.drawText(name_rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, self.person_name)
+        painter.drawText(name_text_rect, Qt.AlignmentFlag.AlignCenter, self.person_name)
+        
+        # 编辑模式：绘制删除按钮
+        if self.is_edit_mode:
+            del_size = 20
+            self.delete_btn_rect = QRect(
+                name_rect.right() - del_size - 5, 
+                name_rect.center().y() - del_size // 2,
+                del_size, del_size
+            )
+            
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#BF616A"))
+            painter.drawEllipse(self.delete_btn_rect)
+            
+            painter.setPen(QPen(QColor("white"), 2))
+            # 画叉
+            r = self.delete_btn_rect
+            painter.drawLine(r.center().x() - 4, r.center().y() - 4, r.center().x() + 4, r.center().y() + 4)
+            painter.drawLine(r.center().x() + 4, r.center().y() - 4, r.center().x() - 4, r.center().y() + 4)
+        else:
+            self.delete_btn_rect = QRect() # 清空区域避免误触
         
         # 2. 绘制网格单元格
         grid_pen = QPen(QColor("#3A4049"), 1)
@@ -104,6 +170,14 @@ class GridPersonRow(QWidget):
     def mousePressEvent(self, event):
         # 寻找点击的单元格
         x = event.position().x()
+        
+        # 优先处理删除按钮点击
+        if self.is_edit_mode and self.delete_btn_rect.contains(event.position().toPoint()):
+            main_window = self.window()
+            if hasattr(main_window, "delete_user"):
+                main_window.delete_user(self.person_name) # 这里最好传 ID，暂传名字
+            return
+
         if x < NAME_COL_WIDTH: return
         
         # 识别具体的列
@@ -147,6 +221,12 @@ class GridPersonRow(QWidget):
                             self.animate_strikethrough(task)
                         
                         if self.click_sound.isLoaded(): self.click_sound.play()
+                        
+                        # 保存变更
+                        main_window = self.window()
+                        if hasattr(main_window, "save_data"):
+                            main_window.save_data()
+                            
                         self.update()
                         return
                     
@@ -163,10 +243,13 @@ class GridPersonRow(QWidget):
         rect_editor = QRect(self.col_offsets[col] + NAME_COL_WIDTH + 4, int(click_y - 12), cell_width - 8, 24)
         
         def create_task(title):
+            if not title or not title.strip(): return
             new_task = Task(title=title, person=self.person_name, date=target_date)
             main_window = self.window()
             if hasattr(main_window, "add_task"):
                 main_window.add_task(new_task)
+            else:
+                print("[ERROR] main_window does not have add_task!")
 
         if hasattr(self, "editor") and self.editor:
             self.editor.finalize()

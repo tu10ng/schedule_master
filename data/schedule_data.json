@@ -1,0 +1,270 @@
+{
+  "users": [
+    {
+      "emp_id": "1001",
+      "name": "张三",
+      "is_active": true,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1002",
+      "name": "李四",
+      "is_active": false,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1003",
+      "name": "王五",
+      "is_active": false,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1004",
+      "name": "周七",
+      "is_active": true,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1005",
+      "name": "123",
+      "is_active": false,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1006",
+      "name": "456",
+      "is_active": true,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1007",
+      "name": "abc",
+      "is_active": false,
+      "avatar": ""
+    },
+    {
+      "emp_id": "1008",
+      "name": "4",
+      "is_active": false,
+      "avatar": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "ed58f1d4",
+      "title": "周期巡检",
+      "person": "张三",
+      "date": "2025-12-28",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#5E81AC",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "28c65fde",
+      "title": "供氧维护",
+      "person": "张三",
+      "date": "2025-12-28",
+      "start_hour": 11,
+      "duration": 2,
+      "color": "#5E81AC",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "80831c4c",
+      "title": "哈奇喂养",
+      "person": "李四",
+      "date": "2025-12-28",
+      "start_hour": 14,
+      "duration": 2,
+      "color": "#5E81AC",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "d90e0a7b",
+      "title": "种植箱调试",
+      "person": "李四",
+      "date": "2025-12-29",
+      "start_hour": 10,
+      "duration": 3,
+      "color": "#5E81AC",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "2855db2a",
+      "title": "液冷管道",
+      "person": "张三",
+      "date": "2025-12-29",
+      "start_hour": 15,
+      "duration": 2,
+      "color": "#A3BE8C",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "0ad0f90c",
+      "title": "整理工具箱",
+      "person": "",
+      "date": "2025-12-28",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": false,
+      "urgent": false
+    },
+    {
+      "id": "e8df4d9a",
+      "title": "123",
+      "person": "123",
+      "date": "2026-01-01",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "c271260f",
+      "title": "123",
+      "person": "周七",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "3d6fbb0f",
+      "title": "13",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": false
+    },
+    {
+      "id": "a31615b4",
+      "title": "1234",
+      "person": "周七",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "f75bf4eb",
+      "title": "345",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "c32751f7",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "ff4e2da9",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "68702ab9",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "31f226f8",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-30",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "d1a7f3c6",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "cd1a32b3",
+      "title": "1",
+      "person": "周七",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": true
+    },
+    {
+      "id": "a9567ba7",
+      "title": "",
+      "person": "456",
+      "date": "2025-12-29",
+      "start_hour": 9,
+      "duration": 2,
+      "color": "#2E3440",
+      "status": "TODO",
+      "scheduled": true,
+      "urgent": false
+    }
+  ]
+}
